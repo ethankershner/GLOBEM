@@ -544,13 +544,11 @@ class dl_feat_preparation():
 
         df_datapoints_X = df_datapoints["X_raw"].apply(lambda df : df[self.feature_list].iloc[-28:])
 
-        @globalize
         def impute(df):
             return df.fillna(df.median(axis = 0),axis=0).fillna(self.NAFILL).values
 
-        with Pool(NJOB) as pool:
-            results = list(tqdm(pool.imap(impute, df_datapoints_X.values),
-                total = len(df_datapoints_X), position = 2, leave=False, desc = "Feature processing", disable=int(self.verbose)==0))
+        results = [impute(df) for df in tqdm(df_datapoints_X.values,
+                total = len(df_datapoints_X), position = 2, leave=False, desc = "Feature processing", disable=int(self.verbose)==0)]
 
         df_results = [pd.DataFrame(r, index= df_datapoints_X.iloc[0].index, columns= df_datapoints_X.iloc[0].columns) for r in results]
 
