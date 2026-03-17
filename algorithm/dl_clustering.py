@@ -240,7 +240,7 @@ class DepressionDetectionClassifier_DL_clustering(DepressionDetectionClassifier_
         # save folder
         self.save_folder = os.path.join(path_definitions.TMP_PATH, "clustering",
             "input_shape-" + "_".join([str(i) for i in self.model_params["input_shape"]]),
-            self.config["data_loader"]["training_dataset_key"],
+            self.config["data_loader"]["training_dataset_key"].replace(":", "_"),
             "cluster_" + str(self.n_clusters),
         )
         Path(self.save_folder).mkdir(parents=True, exist_ok=True)

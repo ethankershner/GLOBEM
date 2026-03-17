@@ -35,7 +35,7 @@ class DepressionDetectionClassifier_DL_erm(DepressionDetectionClassifierBase):
             self.clf = network.build_Transformer(**self.model_params)
         
         # define results saving folder
-        folder_name = self.config["data_loader"]["training_dataset_key"]
+        folder_name = self.config["data_loader"]["training_dataset_key"].replace(":", "_")
         self.results_save_folder = os.path.join(path_definitions.TMP_PATH, self.config["name"],
             "input_shape-" + "_".join([str(i) for i in self.model_params["input_shape"]]),
             self.config["training_params"]["eval_task"],
