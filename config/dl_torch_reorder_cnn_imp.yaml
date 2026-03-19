@@ -1,4 +1,4 @@
-name: "dl_torch_reorder_cnn_imp1"
+name: "dl_torch_reorder_cnn_imp"
 
 feature_definition:
   use_norm_features: False
