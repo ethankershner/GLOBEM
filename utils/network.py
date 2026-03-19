@@ -3,7 +3,10 @@ from typing import List, Dict
 sys.path.append("../")
 sys.path.append("../../")
 from common_settings import *
-from tensorflow.python.data.ops.dataset_ops import FlatMapDataset
+try:
+    from tensorflow.python.data.ops.dataset_ops import FlatMapDataset
+except ImportError:
+    from tensorflow.python.data.ops.flat_map_op import _FlatMapDataset as FlatMapDataset
 
 #### Model Architecture Definition
 

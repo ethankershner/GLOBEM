@@ -9,7 +9,10 @@ from algorithm.ml_xu_personalized import DepressionDetectionAlgorithm_ML_xu_pers
 from data_loader.data_loader_ml import DatasetDict, DataRepo
 from utils.cv_split import judge_corner_cvsplit
 from utils import path_definitions
-from tensorflow.python.data.ops.dataset_ops import FlatMapDataset
+try:
+    from tensorflow.python.data.ops.dataset_ops import FlatMapDataset
+except ImportError:
+    from tensorflow.python.data.ops.flat_map_op import _FlatMapDataset as FlatMapDataset
 
 def calc_cv_oneloop(clf: DepressionDetectionClassifierBase, data_repo: DataRepo, random_seed_index: int,
     n_splits:int = 20) -> Dict[str, List[float]]:

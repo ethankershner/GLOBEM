@@ -11,7 +11,10 @@ from algorithm.dl_erm import DepressionDetectionAlgorithm_DL_erm
 from algorithm.dl_siamese import DepressionDetectionClassifier_DL_siamese
 from data_loader.data_loader_ml import DataRepo
 from utils import network, path_definitions, tf_metric_loss_64bit
-from tensorflow.python.data.ops.dataset_ops import FlatMapDataset
+try:
+    from tensorflow.python.data.ops.dataset_ops import FlatMapDataset
+except ImportError:
+    from tensorflow.python.data.ops.flat_map_op import _FlatMapDataset as FlatMapDataset
 from sklearn.cluster import KMeans
 warnings.filterwarnings("ignore")
 

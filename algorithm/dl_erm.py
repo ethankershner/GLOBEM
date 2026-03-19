@@ -15,7 +15,10 @@ from data_loader.data_loader_dl import data_loader_np, prep_repo_np_dict_feature
 from data_loader.data_loader_ml import DatasetDict, DataRepo, DataRepo_tf
 from algorithm.base import DepressionDetectionClassifierBase
 from utils import network, path_definitions
-from tensorflow.python.data.ops.dataset_ops import FlatMapDataset
+try:
+    from tensorflow.python.data.ops.dataset_ops import FlatMapDataset
+except ImportError:
+    from tensorflow.python.data.ops.flat_map_op import _FlatMapDataset as FlatMapDataset
 
 class DepressionDetectionClassifier_DL_erm(DepressionDetectionClassifierBase):
     """Basic ERM-based deep learning algorithm. Other dl classifier can extend this class"""
