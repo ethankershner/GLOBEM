@@ -1114,8 +1114,9 @@ class TorchTrainer:
 
                 X_batch = X_batch.to(self.device)
 
-                # Randomly select modalities to mask
-                masked_mods = random.sample(modality_names, num_mask)
+                # Randomly select K ~ Uniform{1, num_mask} modalities to mask
+                k = random.randint(1, num_mask)
+                masked_mods = random.sample(modality_names, k)
 
                 # Encode only visible modalities
                 visible_tokens = backbone(
