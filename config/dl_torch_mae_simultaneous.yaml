@@ -1,7 +1,7 @@
-name: "dl_torch_reorder_transformer"
+name: "dl_torch_mae_simultaneous"
 
-# M3: Reorder-Transformer — same Reorder strategy as M0, transformer architecture.
-# Primary comparison: M3 vs M0 answers the architecture question (RQ2).
+# M4a: MAE-Transformer (simultaneous) — classification + masked reconstruction
+# trained jointly. Loss: L = Lc + beta * Lmask. Answers RQ4 vs M3.
 
 feature_definition:
   use_norm_features: False # Reorder feature set
@@ -20,9 +20,9 @@ model_params:
   ff_dim: 128
   num_layers: 4
   dropout: 0.1
-  num_reorder_class: 200
-  rate_of_reorder: 0.7
-  weight_of_reorder: 0.2
+  beta: 0.2 # reconstruction loss weight
+  max_masked_modalities: 2 # K ~ Uniform{1, max_masked}
+  recon_hidden_dim: 64
   flag_y_vector: True
 
 training_params:
@@ -35,6 +35,7 @@ training_params:
   steps_per_epoch: 100
   patience: 20
   grad_clip: 1.0
+  mae_training_mode: "simultaneous"
   best_epoch_strategy: "direct"
   verbose: 0
   skip_training: False

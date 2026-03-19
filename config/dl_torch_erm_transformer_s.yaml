@@ -28,10 +28,10 @@ training_params:
   scheduler: "cosine_warmup"
   learning_rate: 0.0001
   weight_decay: 0.01
-  warmup_steps: 1000 # 5% of 200 epochs * 100 steps
+  warmup_steps: 300
   epochs: 200
   steps_per_epoch: 100
-  patience: 10
+  patience: 20
   grad_clip: 1.0
   best_epoch_strategy: "direct"
   verbose: 0

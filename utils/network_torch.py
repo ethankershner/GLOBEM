@@ -238,6 +238,52 @@ class MaskedReconstructionHead(nn.Module):
         return {name: head(x) for name, head in self.modality_heads.items()}
 
 
+class ModalityMaskEmbedding(nn.Module):
+    """Learned mask embeddings for modality masking.
+
+    For each masked modality, replaces its feature columns with a learned
+    embedding vector (broadcast across all 28 days).
+
+    Args:
+        modality_dims: dict mapping modality name -> number of features
+    """
+
+    def __init__(self, modality_dims):
+        super().__init__()
+        self.mask_params = nn.ParameterDict()
+        for name, n_feats in modality_dims.items():
+            self.mask_params[name] = nn.Parameter(torch.zeros(n_feats))
+
+    def forward(self, X, feat_mask, modality_indices=None):
+        """Replace masked feature columns with learned embeddings.
+
+        Args:
+            X: (batch, 28, N_features) — already zeroed at masked positions
+            feat_mask: (batch, N_features) boolean mask
+            modality_indices: dict mapping modality name -> feature indices
+                (required if not stored; typically passed from dataset config)
+
+        Returns:
+            X with masked positions filled by learned embeddings
+        """
+        if modality_indices is None:
+            from utils.torch_training import MODALITY_INDICES
+            modality_indices = MODALITY_INDICES
+
+        X_out = X.clone()
+        for mod_name, param in self.mask_params.items():
+            col_indices = modality_indices[mod_name]
+            # Check which samples have this modality masked
+            mod_masked = feat_mask[:, col_indices[0]]  # (batch,)
+            if mod_masked.any():
+                # Broadcast learned embedding: (n_feats,) -> (n_masked, 28, n_feats)
+                X_out[mod_masked, :, col_indices[0]:col_indices[-1]+1] = 0.0
+                # Handle non-contiguous indices
+                for i, ci in enumerate(col_indices):
+                    X_out[mod_masked, :, ci] = param[i]
+        return X_out
+
+
 # ─── Composite model builders ───────────────────────────────────────────
 
 def build_erm_model(backbone, input_dim):
