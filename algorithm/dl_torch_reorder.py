@@ -82,6 +82,7 @@ class DepressionDetectionClassifier_DL_torch_reorder(
             mixup_alpha=self.config["data_loader"].get("mixup_alpha"),
             num_reorder_classes=mp.get("num_reorder_class", 200),
             rate_of_reorder=mp.get("rate_of_reorder", 0.7),
+            augmentation=self.config.get("augmentation"),
         )
         return DataLoader(
             dataset,

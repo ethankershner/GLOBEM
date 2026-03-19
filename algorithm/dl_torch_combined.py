@@ -91,6 +91,7 @@ class DepressionDetectionClassifier_DL_torch_combined(
             rate_of_reorder=mp.get("rate_of_reorder", 0.7),
             modality_indices=self.modality_indices,
             max_masked=mp.get("max_masked_modalities", 2),
+            augmentation=self.config.get("augmentation"),
         )
         return DataLoader(
             dataset,

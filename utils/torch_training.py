@@ -25,6 +25,51 @@ from utils import path_definitions
 
 # ─── Datasets ────────────────────────────────────────────────────────────
 
+def apply_augmentation(X, modality_indices, aug_config):
+    """Apply time-series augmentations to a single sample tensor.
+
+    Applied after mixup, before any task-specific transforms (reorder, masking).
+
+    Args:
+        X: torch.Tensor of shape (28, F)
+        modality_indices: dict mapping modality name -> list of feature column indices
+        aug_config: dict with keys:
+            mag_scale_range: (lo, hi) for per-modality magnitude scaling
+            feat_dropout_p: probability of dropping each modality entirely
+            window_slice_min: minimum sub-window length (days)
+
+    Returns:
+        X: augmented tensor (possibly shorter if window slicing applied, then zero-padded)
+    """
+    # Magnitude scaling: per-modality random scale factor
+    if "mag_scale_range" in aug_config:
+        lo, hi = aug_config["mag_scale_range"]
+        for mod_name, col_indices in modality_indices.items():
+            scale = np.random.uniform(lo, hi)
+            for ci in col_indices:
+                X[:, ci] = X[:, ci] * scale
+
+    # Feature dropout: zero entire modalities with probability p
+    if "feat_dropout_p" in aug_config:
+        p = aug_config["feat_dropout_p"]
+        for mod_name, col_indices in modality_indices.items():
+            if np.random.random() < p:
+                for ci in col_indices:
+                    X[:, ci] = 0.0
+
+    # Window slicing: random sub-window, zero-pad back to 28
+    if "window_slice_min" in aug_config:
+        min_len = aug_config["window_slice_min"]
+        seq_len = X.shape[0]  # 28
+        win_len = np.random.randint(min_len, seq_len + 1)
+        start = np.random.randint(0, seq_len - win_len + 1)
+        sliced = X[start:start + win_len].clone()
+        X = torch.zeros_like(X)
+        X[:win_len] = sliced
+
+    return X
+
+
 class MixupDataset(Dataset):
     """PyTorch Dataset wrapping DataRepo_np arrays with optional mixup.
 
@@ -34,9 +79,11 @@ class MixupDataset(Dataset):
         X: np.ndarray of shape (N, 28, F)
         y: np.ndarray of shape (N, 2) one-hot labels
         mixup_alpha: Beta distribution alpha for mixup. None to disable.
+        augmentation: dict of augmentation config (see apply_augmentation). None to disable.
+        modality_indices: required if augmentation is not None
     """
 
-    def __init__(self, X, y, mixup_alpha=None):
+    def __init__(self, X, y, mixup_alpha=None, augmentation=None, modality_indices=None):
         self.X = X.astype(np.float32)
         # Convert one-hot to class index if needed
         if y.ndim > 1 and y.shape[1] == 2:
@@ -46,6 +93,8 @@ class MixupDataset(Dataset):
             self.y = y.astype(np.int64)
             self.y_onehot = np.eye(2, dtype=np.float32)[self.y]
         self.mixup_alpha = mixup_alpha
+        self.augmentation = augmentation
+        self.aug_modality_indices = modality_indices or MODALITY_INDICES
 
     def __len__(self):
         return len(self.X)
@@ -61,7 +110,12 @@ class MixupDataset(Dataset):
             X = lam * X + (1 - lam) * self.X[idx2]
             y = lam * y + (1 - lam) * self.y_onehot[idx2]
 
-        return torch.from_numpy(X), torch.from_numpy(y)
+        X = torch.from_numpy(X)
+
+        if self.augmentation:
+            X = apply_augmentation(X, self.aug_modality_indices, self.augmentation)
+
+        return X, torch.from_numpy(y)
 
 
 class ReorderDataset(MixupDataset):
@@ -81,8 +135,10 @@ class ReorderDataset(MixupDataset):
     """
 
     def __init__(self, X, y, mixup_alpha=None, num_reorder_classes=200,
-                 rate_of_reorder=0.7, permutation_list=None):
-        super().__init__(X, y, mixup_alpha)
+                 rate_of_reorder=0.7, permutation_list=None,
+                 augmentation=None, modality_indices=None):
+        super().__init__(X, y, mixup_alpha, augmentation=augmentation,
+                         modality_indices=modality_indices)
         self.num_reorder_classes = num_reorder_classes
         self.rate_of_reorder = rate_of_reorder
         self.noshuffle_idx = np.arange(28)
@@ -177,8 +233,9 @@ class ModalityMaskingDataset(MixupDataset):
     """
 
     def __init__(self, X, y, mixup_alpha=None, modality_indices=None,
-                 max_masked=2):
-        super().__init__(X, y, mixup_alpha)
+                 max_masked=2, augmentation=None):
+        super().__init__(X, y, mixup_alpha, augmentation=augmentation,
+                         modality_indices=modality_indices)
         self.modality_indices = modality_indices or MODALITY_INDICES
         self.modality_names = list(self.modality_indices.keys())
         self.n_modalities = len(self.modality_names)
@@ -219,9 +276,10 @@ class CombinedDataset(ReorderDataset):
 
     def __init__(self, X, y, mixup_alpha=None, num_reorder_classes=200,
                  rate_of_reorder=0.7, permutation_list=None,
-                 modality_indices=None, max_masked=2):
+                 modality_indices=None, max_masked=2, augmentation=None):
         super().__init__(X, y, mixup_alpha, num_reorder_classes,
-                         rate_of_reorder, permutation_list)
+                         rate_of_reorder, permutation_list,
+                         augmentation=augmentation, modality_indices=modality_indices)
         self.modality_indices = modality_indices or MODALITY_INDICES
         self.modality_names = list(self.modality_indices.keys())
         self.n_modalities = len(self.modality_names)

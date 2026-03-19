@@ -86,6 +86,7 @@ class DepressionDetectionClassifier_DL_torch_mae(
             mixup_alpha=self.config["data_loader"].get("mixup_alpha"),
             modality_indices=self.modality_indices,
             max_masked=mp.get("max_masked_modalities", 2),
+            augmentation=self.config.get("augmentation"),
         )
         return DataLoader(
             dataset,

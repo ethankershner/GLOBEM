@@ -1,0 +1,47 @@
+name: "dl_torch_mae_staged_aug"
+
+# M4b + AUG-4: MAE-Staged Transformer with full augmentation stack.
+# Magnitude scaling + feature dropout + window slicing on top of Mixup.
+
+feature_definition:
+  use_norm_features: False
+
+data_loader:
+  batch_size: 32
+  generate_by: "across_dataset"
+  mixup: "across"
+  mixup_alpha: 0.2
+
+model_params:
+  arch: "Transformer"
+  input_dim: 2
+  d_model: 64
+  num_heads: 8
+  ff_dim: 128
+  num_layers: 4
+  dropout: 0.1
+  beta: 0.2
+  max_masked_modalities: 2
+  recon_hidden_dim: 64
+  flag_y_vector: True
+
+augmentation:
+  mag_scale_range: [0.6, 1.4]
+  feat_dropout_p: 0.15
+  window_slice_min: 22
+
+training_params:
+  optimizer: "AdamW"
+  scheduler: "cosine_warmup"
+  learning_rate: 0.0001
+  weight_decay: 0.01
+  warmup_steps: 300
+  epochs: 200
+  steps_per_epoch: 100
+  patience: 20
+  pretrain_patience: 10
+  grad_clip: 1.0
+  mae_training_mode: "staged"
+  best_epoch_strategy: "direct"
+  verbose: 0
+  skip_training: False
