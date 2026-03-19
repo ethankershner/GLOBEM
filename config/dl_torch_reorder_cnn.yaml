@@ -1,0 +1,36 @@
+name: "dl_torch_reorder_cnn"
+
+feature_definition:
+  use_norm_features: False # match original Reorder
+
+data_loader:
+  batch_size: 512
+  generate_by: "across_dataset"
+  mixup: "across"
+  mixup_alpha: 0.2
+
+model_params:
+  arch: "1dCNN"
+  input_dim: 2
+  conv_shapes: [8, 8, 8]
+  embedding_size: 16
+  flag_y_vector: True
+  num_reorder_class: 200
+  rate_of_reorder: 0.7
+  weight_of_reorder: 0.2
+
+training_params:
+  optimizer: "Adam"
+  scheduler: "cosine_restarts"
+  learning_rate: 0.001
+  cos_annealing_step: 20
+  cos_annealing_decay: 0.95
+  cos_annealing_alpha: 0.01
+  cos_annealing_t_mul: 2.0
+  epochs: 200
+  steps_per_epoch: 100
+  patience: 10
+  grad_clip: 0.0 # no gradient clipping for M0 (matches original)
+  best_epoch_strategy: "direct"
+  verbose: 0
+  skip_training: False
