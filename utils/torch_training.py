@@ -208,6 +208,50 @@ class ModalityMaskingDataset(MixupDataset):
         return X, y, X_target, feat_mask
 
 
+class CombinedDataset(ReorderDataset):
+    """Extends ReorderDataset with modality masking for combined training.
+
+    Each sample gets both a reorder augmentation (with probability rate_of_reorder)
+    AND a modality masking (always masks 1-max_masked modalities).
+
+    Returns: (X_masked, y, reorder_label, X_target, feat_mask)
+    """
+
+    def __init__(self, X, y, mixup_alpha=None, num_reorder_classes=200,
+                 rate_of_reorder=0.7, permutation_list=None,
+                 modality_indices=None, max_masked=2):
+        super().__init__(X, y, mixup_alpha, num_reorder_classes,
+                         rate_of_reorder, permutation_list)
+        self.modality_indices = modality_indices or MODALITY_INDICES
+        self.modality_names = list(self.modality_indices.keys())
+        self.n_modalities = len(self.modality_names)
+        self.n_features = X.shape[-1]
+        self.max_masked = max_masked
+
+    def __getitem__(self, idx):
+        # Get reorder-augmented sample: (X_reordered, y, reorder_label)
+        X, y, reorder_label = super().__getitem__(idx)
+
+        # Keep unmasked copy as reconstruction target
+        X_target = X.clone()
+
+        # Choose K ~ Uniform{1, max_masked} modalities to mask
+        K = np.random.randint(1, self.max_masked + 1)
+        masked_mods = np.random.choice(self.n_modalities, size=K, replace=False)
+
+        # Build feature-level mask (True = masked)
+        feat_mask = torch.zeros(self.n_features, dtype=torch.bool)
+        for mod_idx in masked_mods:
+            mod_name = self.modality_names[mod_idx]
+            for fi in self.modality_indices[mod_name]:
+                feat_mask[fi] = True
+
+        # Zero out masked features
+        X[:, feat_mask] = 0.0
+
+        return X, y, reorder_label, X_target, feat_mask
+
+
 # ─── LR Scheduling ──────────────────────────────────────────────────────
 
 def build_cosine_warmup_scheduler(optimizer, warmup_steps, total_steps):
@@ -834,6 +878,128 @@ class TorchTrainer:
             if self._check_early_stop(epoch):
                 if self.verbose > 0:
                     print(f"Finetune early stopping at epoch {epoch}")
+                break
+
+        return pd.DataFrame(self.results_record)
+
+    def train_combined(self, train_loader, weight_of_reorder, beta,
+                       mask_embeddings, modality_indices,
+                       eval_data_val=None, eval_data_test=None):
+        """Train combined three-head model: classification + reorder + reconstruction.
+
+        Loss: L = Lc + alpha * Lreorder + beta * Lrecon
+
+        Classification is computed on clean (unmasked) input to match eval distribution.
+        Reorder and reconstruction are computed on the masked/reordered input.
+
+        Args:
+            train_loader: DataLoader yielding (X_masked, y, reorder_label, X_target, feat_mask)
+            weight_of_reorder: loss weight for the reorder task (alpha)
+            beta: loss weight for the reconstruction task
+            mask_embeddings: ModalityMaskEmbedding module
+            modality_indices: dict mapping modality name -> list of feature column indices
+            eval_data_val, eval_data_test: (X_np, y_np) tuples
+
+        Returns:
+            pd.DataFrame of per-epoch results
+        """
+        backbone = self.model_parts["backbone"]
+        label_head = self.model_parts["label_head"]
+        reorder_head = self.model_parts["reorder_head"]
+        recon_head = self.model_parts["recon_head"]
+        epochs = self.training_params.get("epochs", 200)
+        steps_per_epoch = self.training_params.get("steps_per_epoch", 100)
+
+        for epoch in range(epochs):
+            self._set_train()
+            mask_embeddings.train()
+            epoch_loss = 0.0
+            epoch_cls_loss = 0.0
+            epoch_reorder_loss = 0.0
+            epoch_recon_loss = 0.0
+
+            train_iter = iter(train_loader)
+            for step in range(steps_per_epoch):
+                try:
+                    X_masked, y_batch, reorder_batch, X_target, feat_mask = next(train_iter)
+                except StopIteration:
+                    train_iter = iter(train_loader)
+                    X_masked, y_batch, reorder_batch, X_target, feat_mask = next(train_iter)
+
+                X_masked = X_masked.to(self.device)
+                y_batch = y_batch.to(self.device)
+                reorder_batch = reorder_batch.to(self.device)
+                X_target = X_target.to(self.device)
+                feat_mask = feat_mask.to(self.device)
+
+                # Classification on clean input (matches eval distribution)
+                cls_embeddings = backbone(X_target)
+                cls_logits = label_head(cls_embeddings)
+                cls_loss = F.cross_entropy(cls_logits, y_batch)
+
+                # Reorder on clean input (reorder is temporal, independent of masking)
+                reorder_logits = reorder_head(cls_embeddings)
+                reorder_loss = F.cross_entropy(reorder_logits, reorder_batch)
+
+                # Reconstruction on masked input
+                X_input = mask_embeddings(X_masked, feat_mask)
+                seq_out = backbone(X_input, return_sequence=True)
+                recon_outputs = recon_head(seq_out)
+                recon_loss = _masked_recon_loss(
+                    recon_outputs, X_target, feat_mask, modality_indices)
+
+                loss = cls_loss + weight_of_reorder * reorder_loss + beta * recon_loss
+
+                self.optimizer.zero_grad()
+                loss.backward()
+                all_params = (list(backbone.parameters()) +
+                              list(label_head.parameters()) +
+                              list(reorder_head.parameters()) +
+                              list(recon_head.parameters()) +
+                              list(mask_embeddings.parameters()))
+                if self.grad_clip > 0:
+                    nn.utils.clip_grad_norm_(all_params, self.grad_clip)
+                self.optimizer.step()
+                self.scheduler.step()
+
+                epoch_loss += loss.item()
+                epoch_cls_loss += cls_loss.item()
+                epoch_reorder_loss += reorder_loss.item()
+                epoch_recon_loss += recon_loss.item()
+
+            avg_loss = epoch_loss / steps_per_epoch
+
+            self.model_repo_dict[epoch] = self._get_all_state_dicts()
+
+            epoch_results = {
+                "epoch": epoch,
+                "logs_loss": avg_loss,
+                "logs_cls_loss": epoch_cls_loss / steps_per_epoch,
+                "logs_reorder_loss": epoch_reorder_loss / steps_per_epoch,
+                "logs_recon_loss": epoch_recon_loss / steps_per_epoch,
+            }
+            if eval_data_val is not None:
+                metrics_val = self._evaluate(eval_data_val[0], eval_data_val[1])
+                epoch_results.update({f"{k}_val": v for k, v in metrics_val.items()})
+            if eval_data_test is not None:
+                metrics_test = self._evaluate(eval_data_test[0], eval_data_test[1])
+                epoch_results.update({f"{k}_test": v for k, v in metrics_test.items()})
+
+            self.results_record.append(epoch_results)
+
+            if self.verbose > 0:
+                print(f"Epoch {epoch} -- loss {avg_loss:.4f} "
+                      f"cls {epoch_results['logs_cls_loss']:.4f} "
+                      f"reorder {epoch_results['logs_reorder_loss']:.4f} "
+                      f"recon {epoch_results['logs_recon_loss']:.4f} "
+                      f"Val balacc {epoch_results.get('balanced_acc_val', 0):.3f}", end="")
+                if eval_data_test is not None:
+                    print(f" | Test balacc {epoch_results.get('balanced_acc_test', 0):.3f}", end="")
+                print()
+
+            if self._check_early_stop(epoch):
+                if self.verbose > 0:
+                    print(f"Early stopping at epoch {epoch}")
                 break
 
         return pd.DataFrame(self.results_record)
