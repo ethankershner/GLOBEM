@@ -4,7 +4,7 @@ PyTorch network architectures for behavioral time series depression detection.
 Provides:
 - BehavioralTransformerEncoder: Transformer encoder with learned day-of-week positional encoding
 - CNN1D_Backbone: 1D-CNN matching the original GLOBEM TF architecture
-- ClassificationHead: Linear(d_model -> 2) for depression classification
+- LabelHead: Dense(d_model -> 16, relu) -> Dense(16 -> 2) for depression classification
 - ReorderHead: Dense(32, relu) -> Dense(num_classes+1, softmax) for reorder task
 - MaskedReconstructionHead: Per-modality 2-layer MLP decoder for MAE
 """
@@ -162,17 +162,6 @@ class CNN1D_Backbone(nn.Module):
         x = x.reshape(x.size(0), -1) # flatten
         x = F.relu(self.fc(x))
         return x                      # (batch, embedding_size)
-
-
-class ClassificationHead(nn.Module):
-    """Binary classification head: Linear -> softmax (applied at loss time)."""
-
-    def __init__(self, input_dim, num_classes=2):
-        super().__init__()
-        self.fc = nn.Linear(input_dim, num_classes)
-
-    def forward(self, x):
-        return self.fc(x)  # raw logits; softmax applied in loss or predict
 
 
 class ReorderHead(nn.Module):
@@ -595,7 +584,7 @@ def build_erm_model(backbone, input_dim):
     Returns:
         (backbone, cls_head) tuple
     """
-    cls_head = ClassificationHead(input_dim, num_classes=2)
+    cls_head = LabelHead(input_dim, num_classes=2)
     return backbone, cls_head
 
 

@@ -1,11 +1,8 @@
 """
 PyTorch ERM (Empirical Risk Minimization) algorithm for depression detection.
 
-Implements classification-only models:
-- M1 (dl_torch_erm_transformer_s): Small transformer (2 layers, d=16)
+Implements classification-only model:
 - M2 (dl_torch_erm_transformer): Proper transformer (4 layers, d=64)
-
-To be implemented in Phase 3.
 """
 
 import os
@@ -17,7 +14,7 @@ from algorithm.dl_torch_base import (
     DepressionDetectionAlgorithm_DL_torch,
     DepressionDetectionClassifier_DL_torch,
 )
-from utils.network_torch import BehavioralTransformerEncoder, ClassificationHead
+from utils.network_torch import BehavioralTransformerEncoder, LabelHead
 
 
 class DepressionDetectionClassifier_DL_torch_erm(
@@ -37,7 +34,7 @@ class DepressionDetectionClassifier_DL_torch_erm(
             num_layers=mp.get("num_layers", 4),
             dropout=mp.get("dropout", 0.1),
         )
-        cls_head = ClassificationHead(mp.get("d_model", 64), num_classes=2)
+        cls_head = LabelHead(mp.get("d_model", 64), num_classes=2)
 
         return {"backbone": backbone, "cls_head": cls_head}
 

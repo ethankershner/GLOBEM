@@ -25,7 +25,6 @@ from algorithm.dl_torch_base import (
 )
 from utils.network_torch import (
     ModalityTokenBackbone,
-    ClassificationHead,
     LabelHead,
     ReorderHead,
 )
@@ -55,7 +54,7 @@ class DepressionDetectionClassifier_DL_torch_modality_token(
             ff_dim=mp.get("ff_dim", 64),
             dropout=mp.get("cross_dropout", 0.1),
         )
-        cls_head = ClassificationHead(d_token, num_classes=2)
+        cls_head = LabelHead(d_token, num_classes=2)
 
         return {
             "backbone": backbone,

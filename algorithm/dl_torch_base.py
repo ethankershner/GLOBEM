@@ -131,7 +131,7 @@ class DepressionDetectionClassifier_DL_torch(DepressionDetectionClassifierBase):
 
         Must be overridden by subclasses. Example return:
             {"backbone": BehavioralTransformerEncoder(...),
-             "cls_head": ClassificationHead(...)}
+             "cls_head": LabelHead(...)}
         """
         raise NotImplementedError
 
@@ -185,8 +185,12 @@ class DepressionDetectionClassifier_DL_torch(DepressionDetectionClassifierBase):
             X: TrainingData container (from DataRepo_torch with flag_train=True)
             y: unused (labels are inside X)
         """
-        torch.manual_seed(42)
+        import random
+        random.seed(42)
         np.random.seed(42)
+        torch.manual_seed(42)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(42)
 
         assert isinstance(X, TrainingData), (
             f"Expected TrainingData, got {type(X)}. "

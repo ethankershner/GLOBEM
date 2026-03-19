@@ -1,9 +1,7 @@
 """
 PyTorch MAE (Masked Autoencoder) algorithm for depression detection.
 
-Implements masked modality reconstruction models:
-- M4a (dl_torch_mae_simultaneous): Simultaneous classification + reconstruction
-  Loss: L = Lc + beta * Lmask
+Implements masked modality reconstruction with staged training:
 - M4b (dl_torch_mae_staged): Pretrain on reconstruction, finetune on classification
   Phase 1: Lmask only; Phase 2: Lc only
 """
@@ -23,7 +21,7 @@ from algorithm.dl_torch_base import (
 )
 from utils.network_torch import (
     BehavioralTransformerEncoder,
-    ClassificationHead,
+    LabelHead,
     MaskedReconstructionHead,
     ModalityMaskEmbedding,
 )
@@ -64,7 +62,7 @@ class DepressionDetectionClassifier_DL_torch_mae(
             num_layers=mp.get("num_layers", 4),
             dropout=mp.get("dropout", 0.1),
         )
-        cls_head = ClassificationHead(d_model, num_classes=2)
+        cls_head = LabelHead(d_model, num_classes=2)
         recon_head = MaskedReconstructionHead(
             d_model=d_model,
             modality_dims=self.modality_dims,
@@ -98,14 +96,13 @@ class DepressionDetectionClassifier_DL_torch_mae(
         )
 
     def _train(self, training_data):
-        """Train with MAE (simultaneous or staged based on config)."""
+        """Train with staged MAE: pretrain reconstruction, finetune classification."""
         train_loader = self._make_train_loader(training_data)
         eval_val = (training_data.val_X, training_data.val_y)
         eval_test = None
         if training_data.test_X is not None:
             eval_test = (training_data.test_X, training_data.test_y)
 
-        # Include mask_embeddings params at construction so scheduler sees all param groups
         self.trainer = TorchTrainer(
             model_parts=self.model_parts,
             training_params=self.training_params,
@@ -113,36 +110,21 @@ class DepressionDetectionClassifier_DL_torch_mae(
             extra_params=self.mask_embeddings.parameters(),
         )
 
-        training_mode = self.training_params.get("mae_training_mode", "simultaneous")
-        beta = self.model_params.get("beta", 0.2)
-
-        if training_mode == "simultaneous":
-            return self.trainer.train_mae_simultaneous(
-                train_loader,
-                beta=beta,
-                mask_embeddings=self.mask_embeddings,
-                modality_indices=self.modality_indices,
-                eval_data_val=eval_val,
-                eval_data_test=eval_test,
-            )
-        elif training_mode == "staged":
-            return self.trainer.train_mae_staged(
-                train_loader,
-                mask_embeddings=self.mask_embeddings,
-                modality_indices=self.modality_indices,
-                eval_data_val=eval_val,
-                eval_data_test=eval_test,
-                pretrain_epochs=self.training_params.get("pretrain_epochs"),
-                pretrain_patience=self.training_params.get("pretrain_patience", 10),
-            )
-        else:
-            raise ValueError(f"Unknown mae_training_mode: {training_mode}")
+        return self.trainer.train_mae_staged(
+            train_loader,
+            mask_embeddings=self.mask_embeddings,
+            modality_indices=self.modality_indices,
+            eval_data_val=eval_val,
+            eval_data_test=eval_test,
+            pretrain_epochs=self.training_params.get("pretrain_epochs"),
+            pretrain_patience=self.training_params.get("pretrain_patience", 10),
+        )
 
 
 class DepressionDetectionAlgorithm_DL_torch_mae(DepressionDetectionAlgorithm_DL_torch):
     """PyTorch MAE algorithm."""
 
-    def __init__(self, config_dict=None, config_name="dl_torch_mae_simultaneous"):
+    def __init__(self, config_dict=None, config_name="dl_torch_mae_transformer"):
         super().__init__(config_dict=config_dict, config_name=config_name)
 
     def prep_model(self, data_train=None, criteria="balanced_acc"):
