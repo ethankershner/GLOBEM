@@ -596,18 +596,14 @@ class TorchTrainer:
                 X_target = X_target.to(self.device)
                 feat_mask = feat_mask.to(self.device)
 
-                # Apply learned mask embeddings
-                X_input = mask_embeddings(X_masked, feat_mask)
-
-                # Forward: get both sequence and pooled outputs
-                seq_out = backbone(X_input, return_sequence=True)
-                pooled = seq_out.mean(dim=1)
-
-                # Classification loss
-                cls_logits = cls_head(pooled)
+                # Classification forward on CLEAN input (matches eval distribution)
+                cls_embeddings = backbone(X_target)
+                cls_logits = cls_head(cls_embeddings)
                 cls_loss = F.cross_entropy(cls_logits, y_batch)
 
-                # Reconstruction loss (MSE on masked features only)
+                # Reconstruction forward on MASKED input
+                X_input = mask_embeddings(X_masked, feat_mask)
+                seq_out = backbone(X_input, return_sequence=True)
                 recon_outputs = recon_head(seq_out)
                 recon_loss = _masked_recon_loss(
                     recon_outputs, X_target, feat_mask, modality_indices)
