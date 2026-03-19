@@ -17,7 +17,6 @@ model_params:
   ff_dim: 128
   num_layers: 4
   dropout: 0.1
-  beta: 0.2
   max_masked_modalities: 2
   recon_hidden_dim: 64
   flag_y_vector: True

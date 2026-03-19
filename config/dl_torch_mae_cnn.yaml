@@ -28,7 +28,7 @@ training_params:
   epochs: 200
   steps_per_epoch: 100
   pretrain_patience: 10
-  patience: 10
+  patience: 20
   grad_clip: 0.0
   best_epoch_strategy: "direct"
   verbose: 0

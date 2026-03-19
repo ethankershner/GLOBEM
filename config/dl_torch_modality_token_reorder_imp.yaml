@@ -41,7 +41,7 @@ training_params:
   cos_annealing_t_mul: 2.0
   epochs: 200
   steps_per_epoch: 100
-  patience: 10
+  patience: 20
   grad_clip: 0.0
   best_epoch_strategy: "direct"
   verbose: 0
