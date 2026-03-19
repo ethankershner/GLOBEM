@@ -744,110 +744,6 @@ class TorchTrainer:
 
         return pd.DataFrame(self.results_record)
 
-    def train_mae_simultaneous(self, train_loader, beta, mask_embeddings,
-                               modality_indices, eval_data_val=None,
-                               eval_data_test=None):
-        """Train MAE model with simultaneous classification + reconstruction.
-
-        Loss: L = Lc + beta * Lmask
-
-        Args:
-            train_loader: DataLoader yielding (X_masked, y, X_target, feat_mask)
-            beta: weight for reconstruction loss
-            mask_embeddings: nn.Module with learned mask embedding parameters
-            modality_indices: dict mapping modality name -> feature index list
-            eval_data_val, eval_data_test: same as train_erm
-        """
-        backbone = self.model_parts["backbone"]
-        cls_head = self.model_parts["cls_head"]
-        recon_head = self.model_parts["recon_head"]
-        epochs = self.training_params.get("epochs", 200)
-        steps_per_epoch = self.training_params.get("steps_per_epoch", 100)
-
-        for epoch in range(epochs):
-            self._set_train()
-            mask_embeddings.train()
-            epoch_loss = 0.0
-            epoch_cls_loss = 0.0
-            epoch_recon_loss = 0.0
-
-            train_iter = iter(train_loader)
-            for step in range(steps_per_epoch):
-                try:
-                    X_masked, y_batch, X_target, feat_mask = next(train_iter)
-                except StopIteration:
-                    train_iter = iter(train_loader)
-                    X_masked, y_batch, X_target, feat_mask = next(train_iter)
-
-                X_masked = X_masked.to(self.device)
-                y_batch = y_batch.to(self.device)
-                X_target = X_target.to(self.device)
-                feat_mask = feat_mask.to(self.device)
-
-                # Classification forward on CLEAN input (matches eval distribution)
-                cls_embeddings = backbone(X_target)
-                cls_logits = cls_head(cls_embeddings)
-                cls_loss = F.cross_entropy(cls_logits, y_batch)
-
-                # Reconstruction forward on MASKED input
-                X_input = mask_embeddings(X_masked, feat_mask)
-                seq_out = backbone(X_input, return_sequence=True)
-                recon_outputs = recon_head(seq_out)
-                recon_loss = _masked_recon_loss(
-                    recon_outputs, X_target, feat_mask, modality_indices)
-
-                loss = cls_loss + beta * recon_loss
-
-                self.optimizer.zero_grad()
-                loss.backward()
-                all_params = (list(backbone.parameters()) +
-                              list(cls_head.parameters()) +
-                              list(recon_head.parameters()) +
-                              list(mask_embeddings.parameters()))
-                if self.grad_clip > 0:
-                    nn.utils.clip_grad_norm_(all_params, self.grad_clip)
-                self.optimizer.step()
-                self.scheduler.step()
-
-                epoch_loss += loss.item()
-                epoch_cls_loss += cls_loss.item()
-                epoch_recon_loss += recon_loss.item()
-
-            avg_loss = epoch_loss / steps_per_epoch
-
-            self.model_repo_dict[epoch] = self._get_all_state_dicts()
-
-            epoch_results = {
-                "epoch": epoch,
-                "logs_loss": avg_loss,
-                "logs_cls_loss": epoch_cls_loss / steps_per_epoch,
-                "logs_recon_loss": epoch_recon_loss / steps_per_epoch,
-            }
-            if eval_data_val is not None:
-                metrics_val = self._evaluate(eval_data_val[0], eval_data_val[1])
-                epoch_results.update({f"{k}_val": v for k, v in metrics_val.items()})
-            if eval_data_test is not None:
-                metrics_test = self._evaluate(eval_data_test[0], eval_data_test[1])
-                epoch_results.update({f"{k}_test": v for k, v in metrics_test.items()})
-
-            self.results_record.append(epoch_results)
-
-            if self.verbose > 0:
-                print(f"Epoch {epoch} -- loss {avg_loss:.4f} "
-                      f"cls {epoch_results['logs_cls_loss']:.4f} "
-                      f"recon {epoch_results['logs_recon_loss']:.4f} "
-                      f"Val balacc {epoch_results.get('balanced_acc_val', 0):.3f}", end="")
-                if eval_data_test is not None:
-                    print(f" | Test balacc {epoch_results.get('balanced_acc_test', 0):.3f}", end="")
-                print()
-
-            if self._check_early_stop(epoch):
-                if self.verbose > 0:
-                    print(f"Early stopping at epoch {epoch}")
-                break
-
-        return pd.DataFrame(self.results_record)
-
     def train_mae_staged(self, train_loader, mask_embeddings, modality_indices,
                          eval_data_val=None, eval_data_test=None,
                          pretrain_epochs=None, pretrain_patience=10):
@@ -1144,6 +1040,241 @@ class TorchTrainer:
             if self._check_early_stop(epoch):
                 if self.verbose > 0:
                     print(f"Early stopping at epoch {epoch}")
+                break
+
+        return pd.DataFrame(self.results_record)
+
+    def train_modality_mae_staged(self, train_loader, mae_decoder,
+                                  modality_names, num_mask=2,
+                                  eval_data_val=None, eval_data_test=None,
+                                  pretrain_epochs=None, pretrain_patience=10):
+        """Staged training for modality-token MAE.
+
+        Phase 1 (pretrain): Randomly mask modalities, encode visible ones,
+            cross-attention decoder reconstructs masked modalities.
+        Phase 2 (finetune): All modalities visible, reorder classification.
+
+        Args:
+            train_loader: DataLoader yielding (X, y, reorder_label)
+            mae_decoder: ModalityCrossAttentionDecoder module
+            modality_names: list of modality names
+            num_mask: number of modalities to mask per sample (1 or 2)
+            pretrain_epochs: max pretrain epochs (defaults to training_params epochs)
+            pretrain_patience: early stopping patience on recon loss
+        """
+        import random
+
+        backbone = self.model_parts["backbone"]
+        epochs = self.training_params.get("epochs", 200)
+        steps_per_epoch = self.training_params.get("steps_per_epoch", 100)
+        if pretrain_epochs is None:
+            pretrain_epochs = epochs
+
+        modality_indices = backbone.modality_indices
+
+        # ── Phase 1: Pretrain on masked reconstruction ──
+        if self.verbose > 0:
+            print("=== Phase 1: Modality-token masked reconstruction pretraining ===")
+
+        # Include decoder params in optimizer
+        self.optimizer.add_param_group({"params": list(mae_decoder.parameters())})
+        # Rebuild scheduler to account for new param group
+        total_steps = pretrain_epochs * steps_per_epoch
+        warmup_steps = self.training_params.get("warmup_steps",
+                                                 steps_per_epoch * 5)
+        scheduler_type = self.training_params.get("scheduler", "cosine_warmup")
+        if scheduler_type == "cosine_restarts":
+            self.scheduler = build_cosine_restarts_scheduler(
+                self.optimizer,
+                first_decay_steps=self.training_params.get("cos_annealing_step", 20),
+                t_mul=self.training_params.get("cos_annealing_t_mul", 2.0),
+                m_mul=self.training_params.get("cos_annealing_decay", 0.95),
+                alpha=self.training_params.get("cos_annealing_alpha", 0.01))
+        else:
+            self.scheduler = build_cosine_warmup_scheduler(
+                self.optimizer, warmup_steps, total_steps)
+
+        pretrain_records = []
+        best_recon_loss = float("inf")
+        patience_counter = 0
+        best_pretrain_state = None
+
+        for epoch in range(pretrain_epochs):
+            self._set_train()
+            mae_decoder.train()
+            epoch_recon_loss = 0.0
+
+            train_iter = iter(train_loader)
+            for step in range(steps_per_epoch):
+                try:
+                    X_batch, y_batch, reorder_batch = next(train_iter)
+                except StopIteration:
+                    train_iter = iter(train_loader)
+                    X_batch, y_batch, reorder_batch = next(train_iter)
+
+                X_batch = X_batch.to(self.device)
+
+                # Randomly select modalities to mask
+                masked_mods = random.sample(modality_names, num_mask)
+
+                # Encode only visible modalities
+                visible_tokens = backbone(
+                    X_batch, mask_modalities=set(masked_mods), return_tokens=True)
+
+                # Decode masked modalities
+                recon = mae_decoder(visible_tokens, masked_mods)
+
+                # Reconstruction loss: MSE on masked modality features
+                recon_loss = torch.tensor(0.0, device=self.device)
+                for mod_name, recon_feats in recon.items():
+                    indices = modality_indices[mod_name]
+                    target = X_batch[:, :, indices]  # (B, 28, n_feats)
+                    recon_loss = recon_loss + F.mse_loss(recon_feats, target)
+                recon_loss = recon_loss / len(recon)
+
+                self.optimizer.zero_grad()
+                recon_loss.backward()
+                all_params = (list(backbone.parameters()) +
+                              list(mae_decoder.parameters()))
+                if self.grad_clip > 0:
+                    nn.utils.clip_grad_norm_(all_params, self.grad_clip)
+                self.optimizer.step()
+                self.scheduler.step()
+
+                epoch_recon_loss += recon_loss.item()
+
+            avg_recon = epoch_recon_loss / steps_per_epoch
+            pretrain_records.append({"epoch": epoch, "phase": "pretrain",
+                                     "logs_recon_loss": avg_recon})
+
+            if self.verbose > 0:
+                print(f"Pretrain epoch {epoch} -- recon_loss {avg_recon:.4f}")
+
+            if avg_recon < best_recon_loss:
+                best_recon_loss = avg_recon
+                patience_counter = 0
+                best_pretrain_state = {
+                    "backbone": deepcopy(backbone.state_dict()),
+                }
+            else:
+                patience_counter += 1
+                if patience_counter >= pretrain_patience:
+                    if self.verbose > 0:
+                        print(f"Pretrain early stopping at epoch {epoch}")
+                    break
+
+        # Restore best pretrain backbone weights
+        if best_pretrain_state is not None:
+            backbone.load_state_dict(best_pretrain_state["backbone"])
+
+        # ── Phase 2: Finetune with reorder classification ──
+        if self.verbose > 0:
+            print("=== Phase 2: Reorder classification fine-tuning ===")
+
+        label_head = self.model_parts["label_head"]
+        reorder_head = self.model_parts["reorder_head"]
+        weight_of_reorder = self.training_params.get("weight_of_reorder", 0.2)
+
+        # Reset optimizer and scheduler for finetune
+        finetune_params = (list(backbone.parameters()) +
+                           list(label_head.parameters()) +
+                           list(reorder_head.parameters()))
+        lr = self.training_params.get("learning_rate", 1e-4)
+        optimizer_type = self.training_params.get("optimizer", "AdamW")
+        if optimizer_type == "Adam":
+            self.optimizer = torch.optim.Adam(finetune_params, lr=lr)
+        else:
+            weight_decay = self.training_params.get("weight_decay", 1e-4)
+            self.optimizer = torch.optim.AdamW(finetune_params, lr=lr,
+                                                weight_decay=weight_decay)
+        total_steps = epochs * steps_per_epoch
+        warmup_steps = self.training_params.get("warmup_steps",
+                                                 steps_per_epoch * 5)
+        if scheduler_type == "cosine_restarts":
+            self.scheduler = build_cosine_restarts_scheduler(
+                self.optimizer,
+                first_decay_steps=self.training_params.get("cos_annealing_step", 20),
+                t_mul=self.training_params.get("cos_annealing_t_mul", 2.0),
+                m_mul=self.training_params.get("cos_annealing_decay", 0.95),
+                alpha=self.training_params.get("cos_annealing_alpha", 0.01))
+        else:
+            self.scheduler = build_cosine_warmup_scheduler(
+                self.optimizer, warmup_steps, total_steps)
+
+        # Reset early stopping
+        self.results_record = []
+        self.model_repo_dict = {}
+
+        for epoch in range(epochs):
+            self._set_train()
+            epoch_loss = 0.0
+            epoch_cls_loss = 0.0
+            epoch_reorder_loss = 0.0
+
+            train_iter = iter(train_loader)
+            for step in range(steps_per_epoch):
+                try:
+                    X_batch, y_batch, reorder_batch = next(train_iter)
+                except StopIteration:
+                    train_iter = iter(train_loader)
+                    X_batch, y_batch, reorder_batch = next(train_iter)
+
+                X_batch = X_batch.to(self.device)
+                y_batch = y_batch.to(self.device)
+                reorder_batch = reorder_batch.to(self.device)
+
+                embeddings = backbone(X_batch)
+                cls_logits = label_head(embeddings)
+                reorder_logits = reorder_head(embeddings)
+
+                cls_loss = F.cross_entropy(cls_logits, y_batch)
+                reorder_loss = F.cross_entropy(reorder_logits, reorder_batch)
+                loss = cls_loss + weight_of_reorder * reorder_loss
+
+                self.optimizer.zero_grad()
+                loss.backward()
+                ft_params = (list(backbone.parameters()) +
+                             list(label_head.parameters()) +
+                             list(reorder_head.parameters()))
+                if self.grad_clip > 0:
+                    nn.utils.clip_grad_norm_(ft_params, self.grad_clip)
+                self.optimizer.step()
+                self.scheduler.step()
+
+                epoch_loss += loss.item()
+                epoch_cls_loss += cls_loss.item()
+                epoch_reorder_loss += reorder_loss.item()
+
+            avg_loss = epoch_loss / steps_per_epoch
+            self.model_repo_dict[epoch] = self._get_all_state_dicts()
+
+            epoch_results = {
+                "epoch": epoch,
+                "logs_loss": avg_loss,
+                "logs_cls_loss": epoch_cls_loss / steps_per_epoch,
+                "logs_reorder_loss": epoch_reorder_loss / steps_per_epoch,
+            }
+            if eval_data_val is not None:
+                metrics_val = self._evaluate(eval_data_val[0], eval_data_val[1])
+                epoch_results.update({f"{k}_val": v for k, v in metrics_val.items()})
+            if eval_data_test is not None:
+                metrics_test = self._evaluate(eval_data_test[0], eval_data_test[1])
+                epoch_results.update({f"{k}_test": v for k, v in metrics_test.items()})
+
+            self.results_record.append(epoch_results)
+
+            if self.verbose > 0:
+                print(f"Finetune epoch {epoch} -- loss {avg_loss:.4f} "
+                      f"cls {epoch_results['logs_cls_loss']:.4f} "
+                      f"reorder {epoch_results['logs_reorder_loss']:.4f} "
+                      f"Val balacc {epoch_results.get('balanced_acc_val', 0):.3f}", end="")
+                if eval_data_test is not None:
+                    print(f" | Test balacc {epoch_results.get('balanced_acc_test', 0):.3f}", end="")
+                print()
+
+            if self._check_early_stop(epoch):
+                if self.verbose > 0:
+                    print(f"Finetune early stopping at epoch {epoch}")
                 break
 
         return pd.DataFrame(self.results_record)
