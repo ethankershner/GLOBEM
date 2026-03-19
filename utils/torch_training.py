@@ -1,0 +1,526 @@
+"""
+PyTorch training infrastructure for GLOBEM depression detection.
+
+Provides:
+- MixupDataset: PyTorch Dataset with optional mixup augmentation
+- ReorderDataset: Extends MixupDataset with temporal reordering
+- TorchTrainer: Training loop with early stopping, checkpointing, evaluation
+"""
+
+import os
+import math
+import pickle
+from copy import deepcopy
+
+import numpy as np
+import pandas as pd
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torch.utils.data import Dataset, DataLoader
+from sklearn.metrics import balanced_accuracy_score, roc_auc_score, accuracy_score, confusion_matrix
+
+from utils import path_definitions
+
+
+# ─── Datasets ────────────────────────────────────────────────────────────
+
+class MixupDataset(Dataset):
+    """PyTorch Dataset wrapping DataRepo_np arrays with optional mixup.
+
+    Replicates the mixup logic from MultiSourceDataGenerator.__mixup__().
+
+    Args:
+        X: np.ndarray of shape (N, 28, F)
+        y: np.ndarray of shape (N, 2) one-hot labels
+        mixup_alpha: Beta distribution alpha for mixup. None to disable.
+    """
+
+    def __init__(self, X, y, mixup_alpha=None):
+        self.X = X.astype(np.float32)
+        # Convert one-hot to class index if needed
+        if y.ndim > 1 and y.shape[1] == 2:
+            self.y_onehot = y.astype(np.float32)
+            self.y = np.argmax(y, axis=1)
+        else:
+            self.y = y.astype(np.int64)
+            self.y_onehot = np.eye(2, dtype=np.float32)[self.y]
+        self.mixup_alpha = mixup_alpha
+
+    def __len__(self):
+        return len(self.X)
+
+    def __getitem__(self, idx):
+        X = self.X[idx]
+        y = self.y_onehot[idx]
+
+        if self.mixup_alpha is not None and self.mixup_alpha > 0:
+            # Sample a random partner and mixup
+            idx2 = np.random.randint(0, len(self.X))
+            lam = np.random.beta(self.mixup_alpha, self.mixup_alpha)
+            X = lam * X + (1 - lam) * self.X[idx2]
+            y = lam * y + (1 - lam) * self.y_onehot[idx2]
+
+        return torch.from_numpy(X), torch.from_numpy(y)
+
+
+class ReorderDataset(MixupDataset):
+    """Extends MixupDataset with temporal reordering augmentation.
+
+    Replicates MultiSourceDataGeneratorReorder logic:
+    - With probability `rate_of_reorder`, apply a random permutation to the time steps
+    - The reorder label is a one-hot vector over (num_reorder_classes + 1) classes
+      where class 0 = no reorder
+
+    Args:
+        X, y, mixup_alpha: same as MixupDataset
+        num_reorder_classes: number of pre-determined reorder permutations
+        rate_of_reorder: fraction of samples that get reordered
+        permutation_list: np.ndarray of shape (num_reorder_classes, 28) — precomputed
+            index permutations expanded from the 10-segment Hamming-maximized permutations
+    """
+
+    def __init__(self, X, y, mixup_alpha=None, num_reorder_classes=200,
+                 rate_of_reorder=0.7, permutation_list=None):
+        super().__init__(X, y, mixup_alpha)
+        self.num_reorder_classes = num_reorder_classes
+        self.rate_of_reorder = rate_of_reorder
+        self.noshuffle_idx = np.arange(28)
+
+        if permutation_list is not None:
+            self.permutation_list = permutation_list
+        else:
+            # Load and expand permutations (same logic as dl_reorder.py)
+            perm_raw = np.load(
+                os.path.join(path_definitions.TMP_PATH,
+                             f"reorder/permutations_hamming_max_{num_reorder_classes}.npy"))
+            self.permutation_list = self._expand_permutations(perm_raw)
+
+    @staticmethod
+    def _expand_permutations(perm_raw):
+        """Expand 10-segment permutations to 28-day index permutations."""
+        expanded = []
+        for p in perm_raw:
+            d = []
+            for idx in p:
+                if idx == 9:
+                    d += [idx * 3]
+                else:
+                    d += [idx * 3, idx * 3 + 1, idx * 3 + 2]
+            expanded.append(np.array(d))
+        return np.array(expanded)
+
+    def __getitem__(self, idx):
+        X, y = super().__getitem__(idx)
+
+        # Decide whether to reorder
+        if np.random.random() < self.rate_of_reorder:
+            reorder_class = np.random.randint(1, self.num_reorder_classes + 1)
+            perm = self.permutation_list[reorder_class - 1]
+            X = X[perm, :]  # permute time steps
+        else:
+            reorder_class = 0
+
+        reorder_label = torch.zeros(self.num_reorder_classes + 1, dtype=torch.float32)
+        reorder_label[reorder_class] = 1.0
+
+        return X, y, reorder_label
+
+
+class InferenceDataset(Dataset):
+    """Simple dataset for inference — no augmentation."""
+
+    def __init__(self, X, y=None, pids=None):
+        self.X = torch.from_numpy(X.astype(np.float32))
+        if y is not None:
+            if y.ndim > 1 and y.shape[1] == 2:
+                self.y = np.argmax(y, axis=1)
+            else:
+                self.y = y
+        else:
+            self.y = None
+        self.pids = pids
+
+    def __len__(self):
+        return len(self.X)
+
+    def __getitem__(self, idx):
+        return self.X[idx]
+
+
+# ─── LR Scheduling ──────────────────────────────────────────────────────
+
+def build_cosine_warmup_scheduler(optimizer, warmup_steps, total_steps):
+    """Linear warmup then cosine annealing to 0."""
+    def lr_lambda(current_step):
+        if current_step < warmup_steps:
+            return float(current_step) / float(max(1, warmup_steps))
+        progress = float(current_step - warmup_steps) / float(max(1, total_steps - warmup_steps))
+        return max(0.0, 0.5 * (1.0 + math.cos(math.pi * progress)))
+    return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+
+
+# ─── Evaluation ──────────────────────────────────────────────────────────
+
+def evaluate_predictions(y_true, y_pred, y_proba):
+    """Compute evaluation metrics matching the existing GLOBEM pipeline.
+
+    Returns dict with: acc, balanced_acc, roc_auc, cfmtx
+    """
+    results = {}
+    results["acc"] = accuracy_score(y_true, y_pred)
+    results["balanced_acc"] = balanced_accuracy_score(y_true, y_pred)
+    try:
+        results["roc_auc"] = roc_auc_score(y_true, y_proba[:, 1])
+    except (ValueError, IndexError):
+        results["roc_auc"] = float("nan")
+    results["cfmtx"] = confusion_matrix(y_true, y_pred).tolist()
+    return results
+
+
+# ─── Trainer ─────────────────────────────────────────────────────────────
+
+class TorchTrainer:
+    """Manages the PyTorch training loop.
+
+    Replaces Keras model.fit() + callbacks with:
+    - AdamW optimizer with cosine annealing + linear warmup
+    - Gradient clipping
+    - Early stopping (patience on validation balanced accuracy)
+    - Model checkpointing (in-memory state_dict snapshots per epoch)
+    - Per-epoch evaluation on val/test sets
+    - Best epoch selection (matching existing 'direct' strategy)
+
+    Args:
+        model_parts: dict with keys like 'backbone', 'cls_head', etc. — all nn.Modules
+        training_params: dict from config YAML
+        device: torch device
+    """
+
+    def __init__(self, model_parts, training_params, device=None):
+        self.model_parts = model_parts
+        self.training_params = training_params
+        self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.verbose = training_params.get("verbose", 0)
+
+        # Move all model parts to device
+        for name, module in self.model_parts.items():
+            module.to(self.device)
+
+        # Collect all parameters
+        all_params = []
+        for module in self.model_parts.values():
+            all_params += list(module.parameters())
+
+        lr = training_params.get("learning_rate", 1e-3)
+        weight_decay = training_params.get("weight_decay", 1e-4)
+        self.optimizer = torch.optim.AdamW(all_params, lr=lr, weight_decay=weight_decay)
+
+        epochs = training_params.get("epochs", 200)
+        steps_per_epoch = training_params.get("steps_per_epoch", 100)
+        total_steps = epochs * steps_per_epoch
+        warmup_steps = training_params.get("warmup_steps", steps_per_epoch * 5)
+        self.scheduler = build_cosine_warmup_scheduler(self.optimizer, warmup_steps, total_steps)
+
+        self.grad_clip = training_params.get("grad_clip", 1.0)
+        self.patience = training_params.get("patience", 10)
+
+        # Checkpointing
+        self.model_repo_dict = {}
+        self.results_record = []
+
+    def _get_all_state_dicts(self):
+        return {name: deepcopy(module.state_dict()) for name, module in self.model_parts.items()}
+
+    def _load_all_state_dicts(self, state_dicts):
+        for name, module in self.model_parts.items():
+            module.load_state_dict(state_dicts[name])
+
+    def _set_train(self):
+        for module in self.model_parts.values():
+            module.train()
+
+    def _set_eval(self):
+        for module in self.model_parts.values():
+            module.eval()
+
+    def train_erm(self, train_loader, eval_data_val=None, eval_data_test=None):
+        """Train an ERM (classification-only) model.
+
+        Args:
+            train_loader: DataLoader yielding (X, y_onehot) batches
+            eval_data_val: (X_np, y_np) tuple for validation evaluation
+            eval_data_test: (X_np, y_np) tuple for test evaluation, or None
+
+        Returns:
+            pd.DataFrame of per-epoch results
+        """
+        backbone = self.model_parts["backbone"]
+        cls_head = self.model_parts["cls_head"]
+        epochs = self.training_params.get("epochs", 200)
+        steps_per_epoch = self.training_params.get("steps_per_epoch", 100)
+
+        for epoch in range(epochs):
+            self._set_train()
+            epoch_loss = 0.0
+            epoch_correct = 0
+            epoch_total = 0
+
+            train_iter = iter(train_loader)
+            for step in range(steps_per_epoch):
+                try:
+                    X_batch, y_batch = next(train_iter)
+                except StopIteration:
+                    train_iter = iter(train_loader)
+                    X_batch, y_batch = next(train_iter)
+
+                X_batch = X_batch.to(self.device)
+                y_batch = y_batch.to(self.device)
+
+                embeddings = backbone(X_batch)
+                logits = cls_head(embeddings)
+                loss = F.cross_entropy(logits, y_batch)
+
+                self.optimizer.zero_grad()
+                loss.backward()
+                if self.grad_clip > 0:
+                    nn.utils.clip_grad_norm_(
+                        list(backbone.parameters()) + list(cls_head.parameters()),
+                        self.grad_clip)
+                self.optimizer.step()
+                self.scheduler.step()
+
+                epoch_loss += loss.item()
+                preds = logits.argmax(dim=1)
+                labels = y_batch.argmax(dim=1) if y_batch.dim() > 1 else y_batch
+                epoch_correct += (preds == labels).sum().item()
+                epoch_total += len(labels)
+
+            avg_loss = epoch_loss / steps_per_epoch
+            avg_acc = epoch_correct / max(epoch_total, 1)
+
+            # Checkpoint
+            self.model_repo_dict[epoch] = self._get_all_state_dicts()
+
+            # Evaluate
+            epoch_results = {"epoch": epoch, "logs_loss": avg_loss, "logs_acc": avg_acc}
+            if eval_data_val is not None:
+                metrics_val = self._evaluate(eval_data_val[0], eval_data_val[1])
+                epoch_results.update({f"{k}_val": v for k, v in metrics_val.items()})
+            if eval_data_test is not None:
+                metrics_test = self._evaluate(eval_data_test[0], eval_data_test[1])
+                epoch_results.update({f"{k}_test": v for k, v in metrics_test.items()})
+
+            self.results_record.append(epoch_results)
+
+            if self.verbose > 0 and eval_data_val is not None:
+                print(f"Epoch {epoch} -- loss {avg_loss:.4f} "
+                      f"Val: balacc {epoch_results.get('balanced_acc_val', 0):.3f} "
+                      f"auc {epoch_results.get('roc_auc_val', 0):.3f}", end="")
+                if eval_data_test is not None:
+                    print(f" | Test: balacc {epoch_results.get('balanced_acc_test', 0):.3f} "
+                          f"auc {epoch_results.get('roc_auc_test', 0):.3f}", end="")
+                print()
+
+            # Early stopping check
+            if self._check_early_stop(epoch):
+                if self.verbose > 0:
+                    print(f"Early stopping at epoch {epoch}")
+                break
+
+        return pd.DataFrame(self.results_record)
+
+    def train_reorder(self, train_loader, weight_of_reorder,
+                      eval_data_val=None, eval_data_test=None):
+        """Train a reorder multi-task model.
+
+        Args:
+            train_loader: DataLoader yielding (X, y_onehot, reorder_label) batches
+            weight_of_reorder: loss weight for the reorder task
+            eval_data_val, eval_data_test: same as train_erm
+
+        Returns:
+            pd.DataFrame of per-epoch results
+        """
+        backbone = self.model_parts["backbone"]
+        label_head = self.model_parts["label_head"]
+        reorder_head = self.model_parts["reorder_head"]
+        epochs = self.training_params.get("epochs", 200)
+        steps_per_epoch = self.training_params.get("steps_per_epoch", 100)
+
+        for epoch in range(epochs):
+            self._set_train()
+            epoch_loss = 0.0
+            epoch_cls_loss = 0.0
+            epoch_reorder_loss = 0.0
+
+            train_iter = iter(train_loader)
+            for step in range(steps_per_epoch):
+                try:
+                    X_batch, y_batch, reorder_batch = next(train_iter)
+                except StopIteration:
+                    train_iter = iter(train_loader)
+                    X_batch, y_batch, reorder_batch = next(train_iter)
+
+                X_batch = X_batch.to(self.device)
+                y_batch = y_batch.to(self.device)
+                reorder_batch = reorder_batch.to(self.device)
+
+                embeddings = backbone(X_batch)
+                cls_logits = label_head(embeddings)
+                reorder_logits = reorder_head(embeddings)
+
+                cls_loss = F.cross_entropy(cls_logits, y_batch)
+                reorder_loss = F.cross_entropy(reorder_logits, reorder_batch)
+                loss = cls_loss + weight_of_reorder * reorder_loss
+
+                self.optimizer.zero_grad()
+                loss.backward()
+                all_params = (list(backbone.parameters()) +
+                              list(label_head.parameters()) +
+                              list(reorder_head.parameters()))
+                if self.grad_clip > 0:
+                    nn.utils.clip_grad_norm_(all_params, self.grad_clip)
+                self.optimizer.step()
+                self.scheduler.step()
+
+                epoch_loss += loss.item()
+                epoch_cls_loss += cls_loss.item()
+                epoch_reorder_loss += reorder_loss.item()
+
+            avg_loss = epoch_loss / steps_per_epoch
+
+            # Checkpoint
+            self.model_repo_dict[epoch] = self._get_all_state_dicts()
+
+            # Evaluate
+            epoch_results = {
+                "epoch": epoch,
+                "logs_loss": avg_loss,
+                "logs_cls_loss": epoch_cls_loss / steps_per_epoch,
+                "logs_reorder_loss": epoch_reorder_loss / steps_per_epoch,
+            }
+            if eval_data_val is not None:
+                metrics_val = self._evaluate(eval_data_val[0], eval_data_val[1])
+                epoch_results.update({f"{k}_val": v for k, v in metrics_val.items()})
+            if eval_data_test is not None:
+                metrics_test = self._evaluate(eval_data_test[0], eval_data_test[1])
+                epoch_results.update({f"{k}_test": v for k, v in metrics_test.items()})
+
+            self.results_record.append(epoch_results)
+
+            if self.verbose > 0 and eval_data_val is not None:
+                print(f"Epoch {epoch} -- loss {avg_loss:.4f} "
+                      f"cls_loss {epoch_results['logs_cls_loss']:.4f} "
+                      f"reorder_loss {epoch_results['logs_reorder_loss']:.4f} "
+                      f"Val balacc {epoch_results.get('balanced_acc_val', 0):.3f}", end="")
+                if eval_data_test is not None:
+                    print(f" | Test balacc {epoch_results.get('balanced_acc_test', 0):.3f}", end="")
+                print()
+
+            if self._check_early_stop(epoch):
+                if self.verbose > 0:
+                    print(f"Early stopping at epoch {epoch}")
+                break
+
+        return pd.DataFrame(self.results_record)
+
+    def _evaluate(self, X_np, y_np):
+        """Run inference and compute metrics.
+
+        Args:
+            X_np: np.ndarray (N, 28, F)
+            y_np: np.ndarray (N,) class labels or (N, 2) one-hot
+
+        Returns:
+            dict of metrics
+        """
+        self._set_eval()
+        if y_np.ndim > 1 and y_np.shape[1] == 2:
+            y_true = np.argmax(y_np, axis=1)
+        else:
+            y_true = y_np
+
+        y_proba = self.predict_proba_np(X_np)
+        y_pred = np.argmax(y_proba, axis=1)
+        return evaluate_predictions(y_true, y_pred, y_proba)
+
+    @torch.no_grad()
+    def predict_proba_np(self, X_np):
+        """Run inference on numpy array, return (N, 2) probabilities."""
+        self._set_eval()
+        backbone = self.model_parts["backbone"]
+
+        # Use cls_head or label_head depending on model type
+        if "cls_head" in self.model_parts:
+            head = self.model_parts["cls_head"]
+        elif "label_head" in self.model_parts:
+            head = self.model_parts["label_head"]
+        else:
+            raise ValueError("No classification head found in model_parts")
+
+        X_tensor = torch.from_numpy(X_np.astype(np.float32)).to(self.device)
+        # Process in chunks to avoid OOM
+        batch_size = 512
+        all_proba = []
+        for i in range(0, len(X_tensor), batch_size):
+            batch = X_tensor[i:i + batch_size]
+            embeddings = backbone(batch)
+            logits = head(embeddings)
+            proba = F.softmax(logits, dim=1)
+            all_proba.append(proba.cpu().numpy())
+        return np.concatenate(all_proba, axis=0)
+
+    def _check_early_stop(self, current_epoch):
+        """Check if training should stop based on validation balanced accuracy."""
+        if self.patience <= 0 or current_epoch < self.patience:
+            return False
+        df = pd.DataFrame(self.results_record)
+        if "balanced_acc_val" not in df.columns:
+            return False
+        recent = df["balanced_acc_val"].iloc[-self.patience:]
+        best_overall = df["balanced_acc_val"].max()
+        # Stop if no improvement in the last `patience` epochs
+        return recent.max() < best_overall
+
+    def find_best_epoch(self, df_results_record, strategy="direct"):
+        """Find best epoch matching GLOBEM's existing logic.
+
+        'direct': pick epoch with best validation balanced accuracy (or min loss as fallback)
+        'on_test': same as existing find_best_epoch_on_test
+        """
+        df = df_results_record.reset_index(drop=True)
+        if strategy == "direct":
+            if "balanced_acc_val" in df.columns and not pd.isna(df["balanced_acc_val"]).any():
+                return int(df.loc[df["balanced_acc_val"].idxmax(), "epoch"])
+            else:
+                return int(df.loc[df["logs_loss"].idxmin(), "epoch"])
+        elif strategy == "on_test":
+            # Replicate find_best_epoch_on_test logic
+            metrics_col = "balanced_acc_val" if ("balanced_acc_val" in df.columns and
+                          not pd.isna(df["balanced_acc_val"]).any()) else "logs_loss"
+            flag_flip = -1 if "loss" in metrics_col else 1
+            test_col = "balanced_acc_test" if "balanced_acc_test" in df.columns else "balanced_acc_val"
+
+            best_train = flag_flip * df.iloc[0][metrics_col]
+            current_test = df.iloc[0][test_col]
+            best_test_list = []
+            for _, row in df.iterrows():
+                if flag_flip * row[metrics_col] > best_train:
+                    best_train = flag_flip * row[metrics_col]
+                    current_test = row[test_col]
+                best_test_list.append(current_test)
+            df["_best_test"] = best_test_list
+            return int(df.loc[df["_best_test"].idxmax(), "epoch"])
+        else:
+            raise ValueError(f"Unknown strategy: {strategy}")
+
+    def save_epoch_results(self, df_results_record, save_folder, config_name=""):
+        """Save results and model checkpoints to disk."""
+        save_obj = {
+            "df_results_record": df_results_record,
+            "model_repo_dict": self.model_repo_dict,
+        }
+        file_path = os.path.join(save_folder, "results_saving.pkl")
+        with open(file_path, "wb") as f:
+            pickle.dump(save_obj, f)

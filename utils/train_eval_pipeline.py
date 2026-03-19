@@ -414,6 +414,8 @@ def two_datasets_model(dataset_train: DatasetDict, dataset_test_dict: Dict[str,D
 
     if type(data_repo_train.X) is FlatMapDataset:
         data_repo_train_eval = algorithm.prep_data_repo(dataset_train, flag_train=False)
+    elif hasattr(data_repo_train, 'get_eval_repo'):
+        data_repo_train_eval = data_repo_train.get_eval_repo()
     elif type(data_repo_train.X) is dict:
         if ("val_whole" in data_repo_train.X and type(data_repo_train.X["val_whole"]) is FlatMapDataset):
             data_repo_train_eval = algorithm.prep_data_repo(dataset_train, flag_train=False)

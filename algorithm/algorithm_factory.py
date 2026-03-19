@@ -23,6 +23,11 @@ from algorithm.dl_dann import DepressionDetectionAlgorithm_DL_dann
 from algorithm.dl_irm import DepressionDetectionAlgorithm_DL_irm
 from algorithm.dl_clustering import DepressionDetectionAlgorithm_DL_clustering
 
+from algorithm.dl_torch_erm import DepressionDetectionAlgorithm_DL_torch_erm
+from algorithm.dl_torch_mae import DepressionDetectionAlgorithm_DL_torch_mae
+from algorithm.dl_torch_combined import DepressionDetectionAlgorithm_DL_torch_combined
+from algorithm.dl_torch_reorder import DepressionDetectionAlgorithm_DL_torch_reorder
+
 def load_algorithm(config_name:str) -> DepressionDetectionAlgorithmBase:
     """Load an algorithm given a config name
 
@@ -53,6 +58,14 @@ def load_algorithm(config_name:str) -> DepressionDetectionAlgorithmBase:
         algorithm = DepressionDetectionAlgorithm_ML_xu_interpretable(config_name = config_name)
     elif (config_name.startswith("ml_xu_personalized")):
         algorithm = DepressionDetectionAlgorithm_ML_xu_personalized(config_name = config_name)
+    elif (config_name.startswith("dl_torch_erm")):
+        algorithm = DepressionDetectionAlgorithm_DL_torch_erm(config_name = config_name)
+    elif (config_name.startswith("dl_torch_mae")):
+        algorithm = DepressionDetectionAlgorithm_DL_torch_mae(config_name = config_name)
+    elif (config_name.startswith("dl_torch_combined")):
+        algorithm = DepressionDetectionAlgorithm_DL_torch_combined(config_name = config_name)
+    elif ("dl_torch_reorder" in config_name):
+        algorithm = DepressionDetectionAlgorithm_DL_torch_reorder(config_name = config_name)
     elif (config_name.startswith("dl_erm")):
         algorithm = DepressionDetectionAlgorithm_DL_erm(config_name = config_name)
     elif (config_name.startswith("dl_irm")):
