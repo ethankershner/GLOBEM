@@ -160,6 +160,27 @@ def build_cosine_warmup_scheduler(optimizer, warmup_steps, total_steps):
     return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
 
+def build_cosine_restarts_scheduler(optimizer, first_decay_steps, t_mul=2.0,
+                                    m_mul=0.95, alpha=0.01):
+    """Replicate TF CosineDecayRestarts schedule.
+
+    Each cycle i has length first_decay_steps * t_mul^i steps.
+    Peak LR decays by m_mul at each restart. Minimum LR factor is alpha.
+    """
+    def lr_lambda(step):
+        completed = 0
+        cycle = 0
+        cycle_len = first_decay_steps
+        while completed + cycle_len <= step:
+            completed += cycle_len
+            cycle += 1
+            cycle_len = int(first_decay_steps * (t_mul ** cycle))
+        progress = (step - completed) / max(1, cycle_len)
+        decay = m_mul ** cycle
+        return decay * (alpha + (1 - alpha) * 0.5 * (1 + math.cos(math.pi * progress)))
+    return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+
+
 # ─── Evaluation ──────────────────────────────────────────────────────────
 
 def evaluate_predictions(y_true, y_pred, y_proba):
@@ -212,15 +233,32 @@ class TorchTrainer:
         for module in self.model_parts.values():
             all_params += list(module.parameters())
 
+        # Optimizer (configurable: Adam or AdamW)
         lr = training_params.get("learning_rate", 1e-3)
-        weight_decay = training_params.get("weight_decay", 1e-4)
-        self.optimizer = torch.optim.AdamW(all_params, lr=lr, weight_decay=weight_decay)
+        optimizer_type = training_params.get("optimizer", "AdamW")
+        if optimizer_type == "Adam":
+            self.optimizer = torch.optim.Adam(all_params, lr=lr)
+        else:
+            weight_decay = training_params.get("weight_decay", 1e-4)
+            self.optimizer = torch.optim.AdamW(all_params, lr=lr, weight_decay=weight_decay)
 
+        # LR scheduler (configurable: cosine_warmup or cosine_restarts)
         epochs = training_params.get("epochs", 200)
         steps_per_epoch = training_params.get("steps_per_epoch", 100)
-        total_steps = epochs * steps_per_epoch
-        warmup_steps = training_params.get("warmup_steps", steps_per_epoch * 5)
-        self.scheduler = build_cosine_warmup_scheduler(self.optimizer, warmup_steps, total_steps)
+        scheduler_type = training_params.get("scheduler", "cosine_warmup")
+        if scheduler_type == "cosine_restarts":
+            self.scheduler = build_cosine_restarts_scheduler(
+                self.optimizer,
+                first_decay_steps=training_params.get("cos_annealing_step", 20),
+                t_mul=training_params.get("cos_annealing_t_mul", 2.0),
+                m_mul=training_params.get("cos_annealing_decay", 0.95),
+                alpha=training_params.get("cos_annealing_alpha", 0.01),
+            )
+        else:
+            total_steps = epochs * steps_per_epoch
+            warmup_steps = training_params.get("warmup_steps", steps_per_epoch * 5)
+            self.scheduler = build_cosine_warmup_scheduler(
+                self.optimizer, warmup_steps, total_steps)
 
         self.grad_clip = training_params.get("grad_clip", 1.0)
         self.patience = training_params.get("patience", 10)
