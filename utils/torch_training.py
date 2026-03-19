@@ -415,7 +415,7 @@ class TorchTrainer:
         self.model_parts = model_parts
         self.training_params = training_params
         self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.verbose = training_params.get("verbose", 0)
+        self.verbose = training_params.get("verbose", 1)
 
         # Move all model parts to device
         for name, module in self.model_parts.items():
