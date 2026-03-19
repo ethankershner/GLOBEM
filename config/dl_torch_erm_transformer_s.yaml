@@ -1,0 +1,38 @@
+name: "dl_torch_erm_transformer_s"
+
+# M1: ERM-Transformer-Small — replicates original benchmark architecture size
+# (2 blocks, 4 heads, d_model=16, ff=16) with our standard training pipeline.
+# Paired with M2 for the capacity ablation.
+
+feature_definition:
+  use_norm_features: False # Reorder feature set for consistency
+
+data_loader:
+  batch_size: 32
+  generate_by: "across_dataset"
+  mixup: "across"
+  mixup_alpha: 0.2
+
+model_params:
+  arch: "Transformer"
+  input_dim: 2
+  d_model: 16
+  num_heads: 4
+  ff_dim: 16
+  num_layers: 2
+  dropout: 0.1
+  flag_y_vector: True
+
+training_params:
+  optimizer: "AdamW"
+  scheduler: "cosine_warmup"
+  learning_rate: 0.0001
+  weight_decay: 0.01
+  warmup_steps: 1000 # 5% of 200 epochs * 100 steps
+  epochs: 200
+  steps_per_epoch: 100
+  patience: 10
+  grad_clip: 1.0
+  best_epoch_strategy: "direct"
+  verbose: 0
+  skip_training: False
