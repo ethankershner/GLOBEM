@@ -23,6 +23,92 @@ from sklearn.metrics import balanced_accuracy_score, roc_auc_score, accuracy_sco
 from utils import path_definitions
 
 
+# ─── Autoencoder Imputation (IMP-1) ─────────────────────────────────────
+
+def load_nan_masks(ds_keys, pred_target="dep_weekly", flag_more_feat_types=True):
+    """Load pre-computed NaN masks for the given dataset keys.
+
+    Returns:
+        dict mapping ds_key -> np.ndarray of shape (N, 28, F) boolean masks
+        (True = originally missing)
+    """
+    masks = {}
+    for ds_key in ds_keys:
+        if flag_more_feat_types:
+            mask_path = os.path.join(
+                path_definitions.DATA_PATH, "np_max_feature_types",
+                f"{pred_target}--{ds_key}--nan_mask.pkl")
+        else:
+            mask_path = os.path.join(
+                path_definitions.DATA_PATH, "np",
+                f"{pred_target}--{ds_key}--nan_mask.pkl")
+        if os.path.exists(mask_path):
+            with open(mask_path, "rb") as f:
+                masks[ds_key] = pickle.load(f)
+        else:
+            return None  # Masks not available; need to regenerate data
+    return masks
+
+
+class AutoencoderImputer:
+    """Autoencoder-based imputation (Choube et al. 2024/2025).
+
+    Trains a shallow autoencoder on training data (loss on observed positions only),
+    then replaces median-imputed values with autoencoder reconstructions for
+    originally-missing positions.
+    """
+
+    def __init__(self, input_dim, bottleneck_dim=20):
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.input_dim = input_dim
+        self.ae = nn.Sequential(
+            nn.Linear(input_dim, bottleneck_dim),
+            nn.ReLU(),
+            nn.Linear(bottleneck_dim, input_dim),
+        ).to(self.device)
+
+    def fit(self, X_train, nan_mask_train, epochs=10, lr=1e-3, verbose=0):
+        """Train on observed positions only.
+
+        Args:
+            X_train: np.ndarray (N, 28, F) — median-imputed training data
+            nan_mask_train: np.ndarray (N, 28, F) — boolean, True = originally missing
+        """
+        optimizer = torch.optim.Adam(self.ae.parameters(), lr=lr)
+        X_flat = torch.from_numpy(X_train.reshape(len(X_train), -1).astype(np.float32)).to(self.device)
+        obs_mask = torch.from_numpy((~nan_mask_train).reshape(len(X_train), -1)).to(self.device)
+
+        self.ae.train()
+        for epoch in range(epochs):
+            recon = self.ae(X_flat)
+            diff = (recon - X_flat) ** 2
+            loss = (diff * obs_mask).sum() / obs_mask.sum().clamp(min=1)
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            if verbose > 0:
+                print(f"  AE imputation epoch {epoch}: loss={loss.item():.6f}")
+        return self
+
+    def transform(self, X, nan_mask):
+        """Replace originally-missing positions with AE reconstructions.
+
+        Args:
+            X: np.ndarray (N, 28, F)
+            nan_mask: np.ndarray (N, 28, F) boolean (True = missing)
+
+        Returns:
+            np.ndarray (N, 28, F) — re-imputed
+        """
+        self.ae.eval()
+        with torch.no_grad():
+            X_flat = torch.from_numpy(X.reshape(len(X), -1).astype(np.float32)).to(self.device)
+            recon = self.ae(X_flat).cpu().numpy().reshape(X.shape)
+        X_out = X.copy()
+        X_out[nan_mask] = recon[nan_mask]
+        return X_out
+
+
 # ─── Datasets ────────────────────────────────────────────────────────────
 
 def apply_augmentation(X, modality_indices, aug_config):

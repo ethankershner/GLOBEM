@@ -356,6 +356,12 @@ def data_loader_np(ds_keys_dict: dict, flag_normalize:bool = True, flag_more_fea
                     Path(os.path.split(dataset_file_np_path)[0]).mkdir(parents=True, exist_ok=True)
                     with open(dataset_file_np_path, "wb") as f:
                         pickle.dump(data_repo_np, f)
+                    # Save NaN masks alongside the data
+                    if hasattr(feat_prep, 'nan_masks'):
+                        nan_mask_path = dataset_file_np_path.replace("--np.pkl", "--nan_mask.pkl")
+                        nan_mask_arr = np.array(feat_prep.nan_masks)
+                        with open(nan_mask_path, "wb") as f:
+                            pickle.dump(nan_mask_arr, f)
                     data_repo_np_dict[pred_target][ds_key] = deepcopy(data_repo_np)
         return data_repo_np_dict
     else:
@@ -392,6 +398,12 @@ def data_loader_np(ds_keys_dict: dict, flag_normalize:bool = True, flag_more_fea
                     Path(os.path.split(dataset_file_np_path_nonorm)[0]).mkdir(parents=True, exist_ok=True)
                     with open(dataset_file_np_path_nonorm, "wb") as f:
                         pickle.dump(data_repo_np, f)
+                    # Save NaN masks alongside the data
+                    if hasattr(feat_prep, 'nan_masks'):
+                        nan_mask_path = dataset_file_np_path_nonorm.replace("--np.pkl", "--nan_mask.pkl")
+                        nan_mask_arr = np.array(feat_prep.nan_masks)
+                        with open(nan_mask_path, "wb") as f:
+                            pickle.dump(nan_mask_arr, f)
                     # Ignore the norm features as they are already normalized on each individual's behavior
                     feature_idx_tobenormed = [idx for idx,f in enumerate(feat_prep.feature_list) if "_norm:" not in f]
                     data_repo_np_norm_dict[pred_target][ds_key] = deepcopy(data_repo_np)
@@ -539,13 +551,17 @@ class dl_feat_preparation():
 
     def prep_data_repo(self, dataset:DatasetDict, flag_train:bool = True) -> DataRepo:
         """Basic feature calculation to obtain median"""
-        
+
         df_datapoints = deepcopy(dataset.datapoints)
 
         df_datapoints_X = df_datapoints["X_raw"].apply(lambda df : df[self.feature_list].iloc[-28:])
 
         def impute(df):
             return df.fillna(df.median(axis = 0),axis=0).fillna(self.NAFILL).values
+
+        # Also compute NaN masks before imputation (True = originally missing)
+        nan_masks = [df.isna().values for df in df_datapoints_X.values]
+        self.nan_masks = nan_masks
 
         results = [impute(df) for df in tqdm(df_datapoints_X.values,
                 total = len(df_datapoints_X), position = 2, leave=False, desc = "Feature processing", disable=int(self.verbose)==0)]
@@ -556,6 +572,6 @@ class dl_feat_preparation():
 
         y = df_datapoints["y_raw"].loc[X.index]
         pids = df_datapoints["pid"].loc[X.index]
-        
+
         self.data_repo = DataRepo(X=X, y=y, pids=pids)
         return self.data_repo

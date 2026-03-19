@@ -1,8 +1,5 @@
 name: "dl_torch_mae_simultaneous"
 
-# M4a: MAE-Transformer (simultaneous) — classification + masked reconstruction
-# trained jointly. Loss: L = Lc + beta * Lmask. Answers RQ4 vs M3.
-
 feature_definition:
   use_norm_features: False # Reorder feature set
 

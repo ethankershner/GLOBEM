@@ -1,8 +1,5 @@
 name: "dl_torch_mae_staged"
 
-# M4b: MAE-Transformer (staged) — pretrain on masked reconstruction,
-# then finetune on classification. Tests BERT-style initialization hypothesis.
-
 feature_definition:
   use_norm_features: False # Reorder feature set
 

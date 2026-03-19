@@ -1,8 +1,5 @@
 name: "dl_torch_reorder_transformer"
 
-# M3: Reorder-Transformer — same Reorder strategy as M0, transformer architecture.
-# Primary comparison: M3 vs M0 answers the architecture question (RQ2).
-
 feature_definition:
   use_norm_features: False # Reorder feature set
 

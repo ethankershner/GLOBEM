@@ -1,8 +1,5 @@
 name: "dl_torch_reorder_deep"
 
-# M6: Reorder-Transformer-Deep — depth scaling test.
-# (6 blocks, 8 heads, d_model=128, ff=256). Compared to M3 for RQ3.
-
 feature_definition:
   use_norm_features: False # Reorder feature set
 

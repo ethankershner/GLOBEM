@@ -1,10 +1,7 @@
 name: "dl_torch_erm_transformer"
 
-# M2: ERM-Transformer-Proper — properly-sized transformer to test capacity hypothesis.
-# (4 blocks, 8 heads, d_model=64, ff=128). Same training as M1 for clean comparison.
-
 feature_definition:
-  use_norm_features: False # Reorder feature set for consistency
+  use_norm_features: False # Reorder feature set
 
 data_loader:
   batch_size: 32

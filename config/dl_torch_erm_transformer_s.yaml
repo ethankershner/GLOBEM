@@ -1,9 +1,5 @@
 name: "dl_torch_erm_transformer_s"
 
-# M1: ERM-Transformer-Small — replicates original benchmark architecture size
-# (2 blocks, 4 heads, d_model=16, ff=16) with our standard training pipeline.
-# Paired with M2 for the capacity ablation.
-
 feature_definition:
   use_norm_features: False # Reorder feature set for consistency
 

@@ -31,6 +31,8 @@ from utils import path_definitions
 from utils.torch_training import (
     MixupDataset,
     TorchTrainer,
+    load_nan_masks,
+    AutoencoderImputer,
 )
 
 
@@ -418,6 +420,48 @@ class DepressionDetectionAlgorithm_DL_torch(DepressionDetectionAlgorithm_DL_erm)
                     rest_repo = rest_repo[idx]
                 test_X = rest_repo.X
                 test_y = rest_repo.y
+
+            # ── Autoencoder imputation (IMP-1) ──
+            if self.config.get("imputation") == "autoencoder":
+                imp_params = self.config.get("imputation_params", {})
+                nan_masks = load_nan_masks(
+                    list(ds_key_all), pred_target=pred_target,
+                    flag_more_feat_types=True)
+                if nan_masks is not None:
+                    # Split NaN masks with same indices as data
+                    # Note: nan_masks are full-feature (before feature selection),
+                    # so select the same feature indices used by the model
+                    from data_loader.data_loader_dl import dl_feat_preparation
+                    from utils.common_settings import global_config
+                    _fp = dl_feat_preparation(
+                        config_name="dl_feat_prep",
+                        flag_more_feat_types=global_config["all"]["flag_more_feat_types"])
+                    si = _fp.selected_feature_idx
+
+                    train_mask = np.concatenate([nan_masks[k][per_ds_train_idx[k]][:, :, si] for k in ds_keys])
+                    val_mask = np.concatenate([nan_masks[k][per_ds_val_idx[k]][:, :, si] for k in ds_keys])
+
+                    # Train AE on training split
+                    T, F_dim = train_X.shape[1], train_X.shape[2]
+                    imputer = AutoencoderImputer(
+                        input_dim=T * F_dim,
+                        bottleneck_dim=imp_params.get("bottleneck_dim", 20))
+                    imputer.fit(train_X, train_mask,
+                                epochs=imp_params.get("epochs", 10),
+                                lr=imp_params.get("lr", 1e-3),
+                                verbose=self.config["training_params"].get("verbose", 0))
+
+                    # Apply trained AE to all splits
+                    train_X = imputer.transform(train_X, train_mask)
+                    val_X = imputer.transform(val_X, val_mask)
+                    whole_mask = np.concatenate([nan_masks[k][:, :, si] for k in ds_keys])
+                    whole_X = imputer.transform(whole_X, whole_mask)
+
+                    if test_X is not None and ds_key_rest in nan_masks:
+                        test_mask = nan_masks[ds_key_rest][:, :, si]
+                        if flag_overlap_filter:
+                            test_mask = test_mask[idx]
+                        test_X = imputer.transform(test_X, test_mask)
 
             training_data = TrainingData(
                 train_X=train_X, train_y=train_y,

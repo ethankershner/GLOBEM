@@ -1,9 +1,5 @@
 name: "dl_torch_combined"
 
-# M5: Combined three-head model — classification + reorder + masked reconstruction.
-# Loss: L = Lc + alpha * Lreorder + beta * Lrecon
-# Answers RQ5: does combining both auxiliary tasks outperform either alone?
-
 feature_definition:
   use_norm_features: False # Reorder feature set
 
