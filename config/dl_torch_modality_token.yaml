@@ -1,4 +1,4 @@
-name: "dl_torch_reorder_cnn_aug"
+name: "dl_torch_modality_token"
 
 feature_definition:
   use_norm_features: False
@@ -10,17 +10,16 @@ data_loader:
   mixup_alpha: 0.2
 
 model_params:
-  arch: "1dCNN"
   input_dim: 2
-  conv_shapes: [8, 8, 8]
-  embedding_size: 16
   flag_y_vector: True
-  num_reorder_class: 200
-  rate_of_reorder: 0.7
-  weight_of_reorder: 0.2
-
-augmentation:
-  mag_scale_range: [0.6, 1.4]
+  # Per-modality CNN
+  conv_channels: 8
+  d_token: 32
+  # Cross-modality attention
+  num_cross_layers: 2
+  num_heads: 4
+  ff_dim: 64
+  cross_dropout: 0.1
 
 training_params:
   optimizer: "Adam"

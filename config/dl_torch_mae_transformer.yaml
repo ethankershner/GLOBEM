@@ -1,4 +1,4 @@
-name: "dl_torch_mae_simultaneous"
+name: "dl_torch_mae_transformer"
 
 feature_definition:
   use_norm_features: False # Reorder feature set
@@ -17,8 +17,8 @@ model_params:
   ff_dim: 128
   num_layers: 4
   dropout: 0.1
-  beta: 0.2 # reconstruction loss weight
-  max_masked_modalities: 2 # K ~ Uniform{1, max_masked}
+  beta: 0.2
+  max_masked_modalities: 2
   recon_hidden_dim: 64
   flag_y_vector: True
 
@@ -31,8 +31,8 @@ training_params:
   epochs: 200
   steps_per_epoch: 100
   patience: 20
+  pretrain_patience: 10 # early stopping for pretrain phase (on recon loss)
   grad_clip: 1.0
-  mae_training_mode: "simultaneous"
   best_epoch_strategy: "direct"
   verbose: 0
   skip_training: False

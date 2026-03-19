@@ -1,4 +1,4 @@
-name: "dl_torch_reorder_cnn_aug"
+name: "dl_torch_mae_cnn"
 
 feature_definition:
   use_norm_features: False
@@ -15,12 +15,7 @@ model_params:
   conv_shapes: [8, 8, 8]
   embedding_size: 16
   flag_y_vector: True
-  num_reorder_class: 200
-  rate_of_reorder: 0.7
-  weight_of_reorder: 0.2
-
-augmentation:
-  mag_scale_range: [0.6, 1.4]
+  max_masked_modalities: 2
 
 training_params:
   optimizer: "Adam"
@@ -32,6 +27,7 @@ training_params:
   cos_annealing_t_mul: 2.0
   epochs: 200
   steps_per_epoch: 100
+  pretrain_patience: 10
   patience: 10
   grad_clip: 0.0
   best_epoch_strategy: "direct"
