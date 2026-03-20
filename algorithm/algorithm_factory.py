@@ -26,7 +26,6 @@ from algorithm.dl_clustering import DepressionDetectionAlgorithm_DL_clustering
 from algorithm.dl_torch_erm import DepressionDetectionAlgorithm_DL_torch_erm
 from algorithm.dl_torch_mae import DepressionDetectionAlgorithm_DL_torch_mae
 from algorithm.dl_torch_reorder import DepressionDetectionAlgorithm_DL_torch_reorder
-from algorithm.dl_torch_mae_cnn import DepressionDetectionAlgorithm_DL_torch_mae_cnn
 from algorithm.dl_torch_modality_token import (
     DepressionDetectionAlgorithm_DL_torch_modality_token,
     DepressionDetectionAlgorithm_DL_torch_modality_token_reorder,
@@ -67,8 +66,6 @@ def load_algorithm(config_name:str) -> DepressionDetectionAlgorithmBase:
         algorithm = DepressionDetectionAlgorithm_ML_xu_personalized(config_name = config_name)
     elif (config_name.startswith("dl_torch_erm")):
         algorithm = DepressionDetectionAlgorithm_DL_torch_erm(config_name = config_name)
-    elif (config_name.startswith("dl_torch_mae_cnn")):
-        algorithm = DepressionDetectionAlgorithm_DL_torch_mae_cnn(config_name = config_name)
     elif (config_name.startswith("dl_torch_mae")):
         algorithm = DepressionDetectionAlgorithm_DL_torch_mae(config_name = config_name)
     elif (config_name.startswith("dl_torch_modality_token_reorder_mae")):
