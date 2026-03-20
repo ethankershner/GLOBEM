@@ -88,11 +88,15 @@ class DepressionDetectionClassifier_DL_torch_modality_token_mae(
             num_reorder_classes=mp.get("num_reorder_class", 200),
             rate_of_reorder=mp.get("rate_of_reorder", 0.7),
         )
+        batch_size = min(
+            self.config["data_loader"].get("batch_size", 512),
+            len(dataset),
+        )
         return DataLoader(
             dataset,
-            batch_size=self.config["data_loader"].get("batch_size", 512),
+            batch_size=batch_size,
             shuffle=True,
-            drop_last=True,
+            drop_last=len(dataset) > batch_size,
             num_workers=0,
             pin_memory=True,
         )

@@ -145,11 +145,15 @@ class DepressionDetectionClassifier_DL_torch(DepressionDetectionClassifierBase):
             y=training_data.train_y,
             mixup_alpha=self.config["data_loader"].get("mixup_alpha"),
         )
+        batch_size = min(
+            self.config["data_loader"].get("batch_size", 512),
+            len(dataset),
+        )
         return DataLoader(
             dataset,
-            batch_size=self.config["data_loader"].get("batch_size", 512),
+            batch_size=batch_size,
             shuffle=True,
-            drop_last=True,
+            drop_last=len(dataset) > batch_size,
             num_workers=0,
             pin_memory=True,
         )

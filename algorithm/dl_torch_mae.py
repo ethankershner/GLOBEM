@@ -86,11 +86,15 @@ class DepressionDetectionClassifier_DL_torch_mae(
             max_masked=mp.get("max_masked_modalities", 2),
             augmentation=self.config.get("augmentation"),
         )
+        batch_size = min(
+            self.config["data_loader"].get("batch_size", 32),
+            len(dataset),
+        )
         return DataLoader(
             dataset,
-            batch_size=self.config["data_loader"].get("batch_size", 32),
+            batch_size=batch_size,
             shuffle=True,
-            drop_last=True,
+            drop_last=len(dataset) > batch_size,
             num_workers=0,
             pin_memory=True,
         )
