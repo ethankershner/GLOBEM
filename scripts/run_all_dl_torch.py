@@ -1,12 +1,14 @@
 """Run all dl_torch model configs across all evaluation tasks.
 
 Usage:
-    python run_all.py                  # run all configs x all tasks, 5 parallel
-    python run_all.py --max_parallel 3 # run 3 at a time
-    python run_all.py --dry_run        # print commands without executing
+    python scripts/run_all_dl_torch.py                    # run all configs x all tasks
+    python scripts/run_all_dl_torch.py --max_parallel 2   # run 2 at a time
+    python scripts/run_all_dl_torch.py --skip_existing     # skip runs whose .pkl already exists
+    python scripts/run_all_dl_torch.py --dry_run           # print commands without executing
 """
 
 import argparse
+import os
 import subprocess
 import time
 from itertools import product
@@ -14,7 +16,6 @@ from itertools import product
 CONFIGS = [
     "dl_torch_erm_transformer",
     "dl_torch_mae_transformer",
-    "dl_torch_mae_cnn",
     "dl_torch_modality_token",
     "dl_torch_modality_token_reorder",
     "dl_torch_modality_token_reorder_aug",
@@ -34,11 +35,35 @@ TASKS = [
     "two_overlap",
 ]
 
+TASK_OUTPUT_DIRS = {
+    "allbutone": "evaluation_allbutone_datasets",
+    "single_within_user": "evaluation_single_dataset_within_user",
+    "crosscovid": "evaluation_crosscovid_datasets",
+    "two_overlap": "evaluation_two_datasets_overlap",
+}
 
-def run_all(max_parallel=5, dry_run=False):
+
+def _results_exists(config, task, pred_target="dep_weekly"):
+    """Check if the results .pkl for this config/task already exists."""
+    output_dir = TASK_OUTPUT_DIRS[task]
+    pkl_path = os.path.join("evaluation_output", output_dir, pred_target, f"{config}.pkl")
+    return os.path.exists(pkl_path)
+
+
+def run_all(max_parallel=5, dry_run=False, skip_existing=False):
     jobs = list(product(CONFIGS, TASKS))
+
+    if skip_existing:
+        skipped = [(c, t) for c, t in jobs if _results_exists(c, t)]
+        jobs = [(c, t) for c, t in jobs if not _results_exists(c, t)]
+        if skipped:
+            print(f"Skipping {len(skipped)} runs with existing results:")
+            for c, t in skipped:
+                print(f"  {c} / {t}")
+            print()
+
     total = len(jobs)
-    print(f"Total runs: {total} ({len(CONFIGS)} configs x {len(TASKS)} tasks)")
+    print(f"Runs to execute: {total}")
     print(f"Max parallel: {max_parallel}")
     print()
 
@@ -72,7 +97,6 @@ def run_all(max_parallel=5, dry_run=False):
         log_file = f"logs/{config}__{task}.log"
         print(f"[{completed + len(active) + 1}/{total}] Starting {config} / {task}")
 
-        import os
         os.makedirs("logs", exist_ok=True)
         log_fh = open(log_file, "w")
         proc = subprocess.Popen(cmd, stdout=log_fh, stderr=subprocess.STDOUT)
@@ -118,5 +142,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--max_parallel", type=int, default=5)
     parser.add_argument("--dry_run", action="store_true")
+    parser.add_argument("--skip_existing", action="store_true",
+                        help="Skip runs whose results .pkl already exists")
     args = parser.parse_args()
-    run_all(max_parallel=args.max_parallel, dry_run=args.dry_run)
+    run_all(max_parallel=args.max_parallel, dry_run=args.dry_run,
+            skip_existing=args.skip_existing)
