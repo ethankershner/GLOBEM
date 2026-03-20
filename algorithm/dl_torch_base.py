@@ -282,12 +282,6 @@ class DepressionDetectionAlgorithm_DL_torch(DepressionDetectionAlgorithm_DL_erm)
         # We don't need the TF data generator objects
         self.data_generator_obj = None
         self.data_generator_additional_args = {"train": {}, "nontrain": {}}
-        # Cast float64 → float32 to halve memory; PyTorch uses float32 anyway
-        for pt in self.data_repo_np_dict:
-            for ds in self.data_repo_np_dict[pt]:
-                repo = self.data_repo_np_dict[pt][ds]
-                if repo.X.dtype == np.float64:
-                    repo.X = repo.X.astype(np.float32)
 
     def prep_data_repo(self, dataset: DatasetDict, flag_train: bool = True):
         """Prepare data repo for PyTorch models.
