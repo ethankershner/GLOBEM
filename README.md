@@ -1,11 +1,8 @@
 ![GLOBEM Logo](./figures/GLOBEM_logo.png)
 
-> This is the official codebase of the dataset paper [GLOBEM Dataset: Multi-Year Datasets for Longitudinal Human Behavior Modeling Generalization](https://arxiv.org/abs/2211.02733), accepted by NeurIPS 2022 Dataset and Benchmark Track ([Link](https://arxiv.org/abs/2211.02733))
-
-
-> This is the official codebase of the platform paper [GLOBEM: Cross-Dataset Generalization of Longitudinal Human
-Behavior Modeling](https://orsonxu.com/wp-content/uploads/Projects/GLOBEM/GLOBEM_IMWUT22.pdf), accepted by IMWUT 2023 ([Link](https://orsonxu.com/wp-content/uploads/Projects/GLOBEM/GLOBEM_IMWUT22.pdf))
-**🏆 Our paper has won the Distinguished Paper Award @ UbiComp 2023!**
+> **Notice:** This is a **PyTorch-only fork** of the GLOBEM platform. It adds custom PyTorch model architectures for cross-dataset depression detection research, and removes the TensorFlow dependency. The original TensorFlow-based algorithms (ERM, DANN, IRM, CSD, MLDG, MASF, Siamese, Reorder, Clustering) are **not available** in this fork. For the original platform with full TF support, see the [upstream GLOBEM repository](https://github.com/UW-EXP/GLOBEM).
+>
+> **Environment:** Python >= 3.10, PyTorch nightly with CUDA 12.8 (required for Blackwell/RTX 50-series GPUs). See [Setup](#setup) below.
 
 # Introduction
 
@@ -66,23 +63,31 @@ Below is a brief description of the platform and a simple tutorial on how to use
 
 ### TL;DR
 
-Our platform is tested with Python 3.7 under MacOS 11.6 (intel) and CentOS 7. Try the platform with one line of command, assuming Anaconda/miniconda is already installed on the machine. Please find the details of the setup and examples explained in the rest of tutorial.
-
-```
-/bin/bash run.sh
-```
+This fork is tested with Python 3.13 on Windows 11 with an NVIDIA RTX 5060 Ti (Blackwell). It requires PyTorch nightly with CUDA 12.8 for Blackwell GPU support. For older GPUs, stable PyTorch with CUDA 12.4 should also work.
 
 ## Setup
 
 ### Environment
 
-GLOBEm is a python-based platform to leverage its flexibility and large number of open libraries. Java JDK (>= 11) is needed for `ml_xu_interpretable`, `ml_xu_personalized`, and `ml_chikersal`. Here is an example of using Anaconda or miniconda for environment setup:
+GLOBEM is a Python-based platform. Java JDK (>= 11) is needed for `ml_xu_interpretable`, `ml_xu_personalized`, and `ml_chikersal`. Here is an example setup:
 
-```
-conda create -n globem python=3.7
+```bash
+# Create and activate a virtual environment (conda or venv)
+conda create -n globem python=3.13
 conda activate globem
+
+# Install PyTorch with CUDA FIRST (required before other packages on Windows)
+# For Blackwell GPUs (RTX 50-series) - use nightly with CUDA 12.8:
+pip install --pre torch torchvision --index-url https://download.pytorch.org/whl/nightly/cu128
+
+# For older GPUs (Ampere, Ada Lovelace) - stable CUDA 12.4 works:
+# pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
+
+# Install remaining dependencies
 pip install -r requirements.txt
 ```
+
+> **Windows Note:** On Windows, `torch` must be imported before `numpy`/`pandas` in scripts to avoid DLL initialization failures. The evaluation entry point ([`evaluation/model_train_eval.py`](./evaluation/model_train_eval.py)) already handles this.
 
 ### <a name="dataset_preparation"></a> Dataset Preparation
 Example raw data are provided in [`data_raw`](./data_raw) folder[^data]. Each dataset contains `ParticipantsInfoData`, `FeatureData`, and `SurveyData`. Please refer to [`data_raw/README.md`](./data_raw/README.md) for more details about the raw data format.

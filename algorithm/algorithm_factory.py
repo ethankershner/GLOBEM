@@ -14,14 +14,17 @@ from algorithm.ml_xu_interpretable import DepressionDetectionAlgorithm_ML_xu_int
 from algorithm.ml_xu_personalized import DepressionDetectionAlgorithm_ML_xu_personalized
 
 from algorithm.dl_erm import DepressionDetectionAlgorithm_DL_erm
-from algorithm.dl_siamese import DepressionDetectionAlgorithm_DL_siamese
-from algorithm.dl_reorder import DepressionDetectionAlgorithm_DL_reorder
-from algorithm.dl_mldg import DepressionDetectionAlgorithm_DL_mldg
-from algorithm.dl_masf import DepressionDetectionAlgorithm_DL_masf
-from algorithm.dl_csd import DepressionDetectionAlgorithm_DL_csd
-from algorithm.dl_dann import DepressionDetectionAlgorithm_DL_dann
-from algorithm.dl_irm import DepressionDetectionAlgorithm_DL_irm
-from algorithm.dl_clustering import DepressionDetectionAlgorithm_DL_clustering
+try:
+    from algorithm.dl_siamese import DepressionDetectionAlgorithm_DL_siamese
+    from algorithm.dl_reorder import DepressionDetectionAlgorithm_DL_reorder
+    from algorithm.dl_mldg import DepressionDetectionAlgorithm_DL_mldg
+    from algorithm.dl_masf import DepressionDetectionAlgorithm_DL_masf
+    from algorithm.dl_csd import DepressionDetectionAlgorithm_DL_csd
+    from algorithm.dl_dann import DepressionDetectionAlgorithm_DL_dann
+    from algorithm.dl_irm import DepressionDetectionAlgorithm_DL_irm
+    from algorithm.dl_clustering import DepressionDetectionAlgorithm_DL_clustering
+except (ImportError, ModuleNotFoundError, AttributeError):
+    pass  # TF-dependent algorithms not available
 
 from algorithm.dl_torch_erm import DepressionDetectionAlgorithm_DL_torch_erm
 from algorithm.dl_torch_mae import DepressionDetectionAlgorithm_DL_torch_mae

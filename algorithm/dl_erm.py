@@ -17,8 +17,11 @@ from algorithm.base import DepressionDetectionClassifierBase
 from utils import network, path_definitions
 try:
     from tensorflow.python.data.ops.dataset_ops import FlatMapDataset
-except ImportError:
-    from tensorflow.python.data.ops.flat_map_op import _FlatMapDataset as FlatMapDataset
+except (ImportError, ModuleNotFoundError):
+    try:
+        from tensorflow.python.data.ops.flat_map_op import _FlatMapDataset as FlatMapDataset
+    except (ImportError, ModuleNotFoundError):
+        FlatMapDataset = None
 
 class DepressionDetectionClassifier_DL_erm(DepressionDetectionClassifierBase):
     """Basic ERM-based deep learning algorithm. Other dl classifier can extend this class"""

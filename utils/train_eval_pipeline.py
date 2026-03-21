@@ -11,8 +11,11 @@ from utils.cv_split import judge_corner_cvsplit
 from utils import path_definitions
 try:
     from tensorflow.python.data.ops.dataset_ops import FlatMapDataset
-except ImportError:
-    from tensorflow.python.data.ops.flat_map_op import _FlatMapDataset as FlatMapDataset
+except (ImportError, ModuleNotFoundError):
+    try:
+        from tensorflow.python.data.ops.flat_map_op import _FlatMapDataset as FlatMapDataset
+    except (ImportError, ModuleNotFoundError):
+        FlatMapDataset = None
 
 def calc_cv_oneloop(clf: DepressionDetectionClassifierBase, data_repo: DataRepo, random_seed_index: int,
     n_splits:int = 20) -> Dict[str, List[float]]:

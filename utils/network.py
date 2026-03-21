@@ -5,8 +5,11 @@ sys.path.append("../../")
 from common_settings import *
 try:
     from tensorflow.python.data.ops.dataset_ops import FlatMapDataset
-except ImportError:
-    from tensorflow.python.data.ops.flat_map_op import _FlatMapDataset as FlatMapDataset
+except (ImportError, ModuleNotFoundError, AttributeError):
+    try:
+        from tensorflow.python.data.ops.flat_map_op import _FlatMapDataset as FlatMapDataset
+    except (ImportError, ModuleNotFoundError, AttributeError):
+        FlatMapDataset = None
 
 #### Model Architecture Definition
 

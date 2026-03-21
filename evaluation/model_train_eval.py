@@ -1,5 +1,6 @@
 import os, sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+import torch  # Must import before numpy/pandas to avoid DLL conflicts on Windows
 from utils.common_settings import *
 from data_loader import data_loader_ml, data_loader_dl
 from utils import path_definitions, train_eval_pipeline

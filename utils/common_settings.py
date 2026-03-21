@@ -47,8 +47,14 @@ NJOB = int(np.ceil(CPU_COUNT// 2))
 
 from multiprocessing import Pool, Manager, set_start_method, get_context
 from multiprocessing.pool import ThreadPool
-import ray
-import swifter
+try:
+    import ray
+except (ImportError, ModuleNotFoundError):
+    ray = None
+try:
+    import swifter
+except (ImportError, ModuleNotFoundError):
+    pass
 os.environ["MODIN_ENGINE"] = "ray"
 
 import sklearn
@@ -70,28 +76,54 @@ standard_scaler = StandardScaler()
 robust_scaler = RobustScaler()
 
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
-import tensorflow as tf
-import tensorflow_addons as tfa
+try:
+    import tensorflow as tf
+    import tensorflow_addons as tfa
 
-from tensorflow import keras
-from tensorflow.python.keras import backend as K
-from tensorflow.keras import layers, activations
+    from tensorflow import keras
+    from tensorflow.python.keras import backend as K
+    from tensorflow.keras import layers, activations
 
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.optimizers import Adam, SGD
-from tensorflow.keras.models import Model
-from tensorflow.keras.callbacks import EarlyStopping, LearningRateScheduler, ModelCheckpoint, ReduceLROnPlateau, Callback
+    from tensorflow.keras.models import Sequential
+    from tensorflow.keras.optimizers import Adam, SGD
+    from tensorflow.keras.models import Model
+    from tensorflow.keras.callbacks import EarlyStopping, LearningRateScheduler, ModelCheckpoint, ReduceLROnPlateau, Callback
 
-from tensorflow.keras.layers import Layer, Input, Activation, Lambda, Flatten, Concatenate, add, Average
-from tensorflow.keras.layers import BatchNormalization, LayerNormalization
-from tensorflow_addons.layers import InstanceNormalization
-from tensorflow.keras.layers import Conv1D, Conv2D, ZeroPadding2D, MaxPooling1D, MaxPooling2D, Dense, Dropout, GlobalAveragePooling1D, Cropping2D
-from tensorflow.keras.layers import LSTM, Bidirectional, TimeDistributed
-from tensorflow.keras.layers import UpSampling1D, UpSampling2D, Reshape, Conv1DTranspose, Conv2DTranspose, InputSpec
+    from tensorflow.keras.layers import Layer, Input, Activation, Lambda, Flatten, Concatenate, add, Average
+    from tensorflow.keras.layers import BatchNormalization, LayerNormalization
+    from tensorflow_addons.layers import InstanceNormalization
+    from tensorflow.keras.layers import Conv1D, Conv2D, ZeroPadding2D, MaxPooling1D, MaxPooling2D, Dense, Dropout, GlobalAveragePooling1D, Cropping2D
+    from tensorflow.keras.layers import LSTM, Bidirectional, TimeDistributed
+    from tensorflow.keras.layers import UpSampling1D, UpSampling2D, Reshape, Conv1DTranspose, Conv2DTranspose, InputSpec
 
-from tensorflow.keras.initializers import glorot_uniform,he_uniform
-from tensorflow.keras.regularizers import l2
-from tensorflow.keras.utils import plot_model,normalize, Sequence
+    from tensorflow.keras.initializers import glorot_uniform,he_uniform
+    from tensorflow.keras.regularizers import l2
+    from tensorflow.keras.utils import plot_model,normalize, Sequence
+except (ImportError, ModuleNotFoundError, AttributeError):
+    # TF not available — define placeholders so module-level type hints don't crash
+    import types
+    tf = types.ModuleType("tensorflow")
+    tf.data = types.ModuleType("tensorflow.data")
+    tf.data.Dataset = None
+    tf.keras = types.ModuleType("tensorflow.keras")
+    tf.keras.layers = None
+    tf.keras.backend = types.ModuleType("tensorflow.keras.backend")
+    tfa = types.ModuleType("tensorflow_addons")
+    keras = types.ModuleType("keras")
+    K = None
+    layers = activations = None
+    Sequential = Model = None
+    Adam = SGD = None
+    class _DummyBase: pass
+    EarlyStopping = LearningRateScheduler = ModelCheckpoint = ReduceLROnPlateau = Callback = _DummyBase
+    Layer = Input = Activation = Lambda = Flatten = Concatenate = add = Average = None
+    BatchNormalization = LayerNormalization = InstanceNormalization = None
+    Conv1D = Conv2D = ZeroPadding2D = MaxPooling1D = MaxPooling2D = Dense = Dropout = GlobalAveragePooling1D = Cropping2D = None
+    LSTM = Bidirectional = TimeDistributed = None
+    UpSampling1D = UpSampling2D = Reshape = Conv1DTranspose = Conv2DTranspose = InputSpec = None
+    glorot_uniform = he_uniform = None
+    l2 = None
+    plot_model = normalize = Sequence = None
 
 sys.path.append(os.path.dirname(os.path.abspath(Path(__file__))))
 from basic_utils import utils_ml
@@ -105,11 +137,17 @@ def set_random_seed(seed):
     os.environ['PYTHONHASHSEED']=str(seed)
     random.seed(seed)
     np.random.seed(seed)
-    tf.random.set_seed(seed)
-    tf.keras.utils.set_random_seed(seed)
+    try:
+        tf.random.set_seed(seed)
+        tf.keras.utils.set_random_seed(seed)
+    except (AttributeError, Exception):
+        pass
 seed = 42
 set_random_seed(seed)
-tf.keras.backend.set_floatx('float64')
+try:
+    tf.keras.backend.set_floatx('float64')
+except (AttributeError, Exception):
+    pass
 
 ################
 # Define A few commonly used variables

@@ -676,7 +676,7 @@ class RandomizedLogisticRegression(BaseRandomizedLinearModel):
                  normalize=True,
                  random_state=None,
                  n_jobs=1, pre_dispatch='3*n_jobs',
-                 memory=Memory(cachedir=None, verbose=0)):
+                 memory=Memory(location=None, verbose=0)):
         self.C = C
         self.scaling = scaling
         self.sample_fraction = sample_fraction
