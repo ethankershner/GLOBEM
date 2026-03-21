@@ -337,16 +337,19 @@ class DepressionDetectionAlgorithm_DL_torch(DepressionDetectionAlgorithm_DL_erm)
 
         assert sum(1 for flag in [flag_overlap_filter, flag_split_filter, flag_single_within_user_split] if flag) <= 1
 
-        # Build filtered data_repo_dict
+        # Build filtered data_repo_dict, tracking filter indices for nan_masks
         data_repo_dict = {}
+        ds_filter_idx = {}  # ds_key -> index array (None = no filtering)
         for ds_key in ds_keys:
             data_repo_dict[ds_key] = self.data_repo_np_dict[pred_target][ds_key]
+            ds_filter_idx[ds_key] = None
             if flag_overlap_filter:
                 idx = np.where([
                     p in set(self.overlapping_pids_dict[dataset.prediction_target][overlap_ds_key_train][ds_key])
                     for p in data_repo_dict[ds_key].pids
                 ])[0]
                 data_repo_dict[ds_key] = data_repo_dict[ds_key][idx]
+                ds_filter_idx[ds_key] = idx
             if flag_split_filter:
                 if split_group == "test":
                     split_pids = np.array(
@@ -360,6 +363,7 @@ class DepressionDetectionAlgorithm_DL_torch(DepressionDetectionAlgorithm_DL_erm)
                     split_pids = np.concatenate(split_pids)
                 idx = np.where([p in set(split_pids) for p in data_repo_dict[ds_key].pids])[0]
                 data_repo_dict[ds_key] = data_repo_dict[ds_key][idx]
+                ds_filter_idx[ds_key] = idx
             if flag_single_within_user_split:
                 df_data_idx = pd.DataFrame(
                     self.data_repo_np_dict[pred_target][ds_key].pids, columns=["pid"]
@@ -380,6 +384,7 @@ class DepressionDetectionAlgorithm_DL_torch(DepressionDetectionAlgorithm_DL_erm)
                 elif within_split_group == "test":
                     data_idx = np.concatenate(df_data_idx["idx_test"].values)
                 data_repo_dict[ds_key] = data_repo_dict[ds_key][data_idx]
+                ds_filter_idx[ds_key] = data_idx
 
         if flag_train:
             # ── Train/val split (same logic as dl_erm.py) ──
@@ -446,8 +451,15 @@ class DepressionDetectionAlgorithm_DL_torch(DepressionDetectionAlgorithm_DL_erm)
                         flag_more_feat_types=global_config["all"]["flag_more_feat_types"])
                     si = _fp.selected_feature_idx
 
-                    train_mask = np.concatenate([nan_masks[k][per_ds_train_idx[k]][:, :, si] for k in ds_keys])
-                    val_mask = np.concatenate([nan_masks[k][per_ds_val_idx[k]][:, :, si] for k in ds_keys])
+                    # Apply same dataset-level filtering to nan_masks, then index by train/val splits
+                    filtered_masks = {}
+                    for k in ds_keys:
+                        m = nan_masks[k]
+                        if ds_filter_idx[k] is not None:
+                            m = m[ds_filter_idx[k]]
+                        filtered_masks[k] = m[:, :, si]
+                    train_mask = np.concatenate([filtered_masks[k][per_ds_train_idx[k]] for k in ds_keys])
+                    val_mask = np.concatenate([filtered_masks[k][per_ds_val_idx[k]] for k in ds_keys])
 
                     # Train AE on training split
                     T, F_dim = train_X.shape[1], train_X.shape[2]
@@ -462,7 +474,7 @@ class DepressionDetectionAlgorithm_DL_torch(DepressionDetectionAlgorithm_DL_erm)
                     # Apply trained AE to all splits
                     train_X = imputer.transform(train_X, train_mask)
                     val_X = imputer.transform(val_X, val_mask)
-                    whole_mask = np.concatenate([nan_masks[k][:, :, si] for k in ds_keys])
+                    whole_mask = np.concatenate([filtered_masks[k] for k in ds_keys])
                     whole_X = imputer.transform(whole_X, whole_mask)
 
                     if test_X is not None and ds_key_rest in nan_masks:
