@@ -15,7 +15,6 @@ from itertools import product
 
 CONFIGS = [
     "dl_torch_erm_transformer",
-    "dl_torch_mae_transformer",
     "dl_torch_modality_token",
     "dl_torch_modality_token_reorder",
     "dl_torch_modality_token_reorder_aug",
