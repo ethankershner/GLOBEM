@@ -340,6 +340,9 @@ class DepressionDetectionAlgorithm_DL_torch(DepressionDetectionAlgorithm_DL_erm)
         # Build filtered data_repo_dict, tracking filter indices for nan_masks
         data_repo_dict = {}
         ds_filter_idx = {}  # ds_key -> index array (None = no filtering)
+        within_user_split_info = {}  # ds_key -> {"idx_train": ..., "idx_test": ...}
+        defer_within_user_split = (flag_single_within_user_split and
+                                   self.config.get("imputation") == "autoencoder")
         for ds_key in ds_keys:
             data_repo_dict[ds_key] = self.data_repo_np_dict[pred_target][ds_key]
             ds_filter_idx[ds_key] = None
@@ -379,12 +382,70 @@ class DepressionDetectionAlgorithm_DL_torch(DepressionDetectionAlgorithm_DL_erm)
                 df_data_idx["idx_test"] = df_data_idx.apply(
                     lambda row: row["idx"][-row["length_test"]:], axis=1
                 )
+                within_user_split_info[ds_key] = {
+                    "idx_train": np.concatenate(df_data_idx["idx_train"].values),
+                    "idx_test": np.concatenate(df_data_idx["idx_test"].values),
+                }
+                if not defer_within_user_split:
+                    # No imputation: apply temporal split immediately
+                    if within_split_group == "train":
+                        data_idx = within_user_split_info[ds_key]["idx_train"]
+                    elif within_split_group == "test":
+                        data_idx = within_user_split_info[ds_key]["idx_test"]
+                    data_repo_dict[ds_key] = data_repo_dict[ds_key][data_idx]
+                    ds_filter_idx[ds_key] = data_idx
+
+        # ── Per-participant autoencoder imputation (IMP-1) ──
+        # Impute BEFORE any within-user temporal split so the AE sees each
+        # participant's full data.  For cross-dataset tasks each participant
+        # is fully in one split, so timing doesn't matter.
+        _imputer = None   # keep reference for test-set imputation below
+        _ae_epochs = _ae_lr = _si = _nan_masks = None
+        if self.config.get("imputation") == "autoencoder":
+            imp_params = self.config.get("imputation_params", {})
+            _nan_masks = load_nan_masks(
+                list(ds_key_all), pred_target=pred_target,
+                flag_more_feat_types=True)
+            if _nan_masks is not None:
+                from data_loader.data_loader_dl import dl_feat_preparation
+                from utils.common_settings import global_config
+                _fp = dl_feat_preparation(
+                    config_name="dl_feat_prep",
+                    flag_more_feat_types=global_config["all"]["flag_more_feat_types"])
+                _si = _fp.selected_feature_idx
+
+                _imputer = AutoencoderImputer(
+                    hidden_size=imp_params.get("hidden_size", 20),
+                    encoding_size=imp_params.get("encoding_size", 10),
+                    knn_neighbors=imp_params.get("knn_neighbors", 6))
+                _ae_epochs = imp_params.get("epochs", 10)
+                _ae_lr = imp_params.get("lr", 1e-4)
+                _ae_verbose = self.config["training_params"].get("verbose", 0)
+
+                from data_loader.data_loader_ml import DataRepo_np
+                for ds_key in ds_keys:
+                    ds_mask = _nan_masks[ds_key]
+                    if ds_filter_idx[ds_key] is not None:
+                        ds_mask = ds_mask[ds_filter_idx[ds_key]]
+                    ds_mask = ds_mask[:, :, _si]
+                    imputed_X = _imputer.transform(
+                        data_repo_dict[ds_key].X, ds_mask,
+                        data_repo_dict[ds_key].pids,
+                        epochs=_ae_epochs, lr=_ae_lr, verbose=_ae_verbose)
+                    # Wrap in new DataRepo_np to avoid mutating the stored original
+                    data_repo_dict[ds_key] = DataRepo_np(
+                        X=imputed_X,
+                        y=data_repo_dict[ds_key].y,
+                        pids=data_repo_dict[ds_key].pids)
+
+        # Apply deferred within-user split (on imputed data)
+        if defer_within_user_split:
+            for ds_key in ds_keys:
                 if within_split_group == "train":
-                    data_idx = np.concatenate(df_data_idx["idx_train"].values)
+                    data_idx = within_user_split_info[ds_key]["idx_train"]
                 elif within_split_group == "test":
-                    data_idx = np.concatenate(df_data_idx["idx_test"].values)
+                    data_idx = within_user_split_info[ds_key]["idx_test"]
                 data_repo_dict[ds_key] = data_repo_dict[ds_key][data_idx]
-                ds_filter_idx[ds_key] = data_idx
 
         if flag_train:
             # ── Train/val split (same logic as dl_erm.py) ──
@@ -434,54 +495,15 @@ class DepressionDetectionAlgorithm_DL_torch(DepressionDetectionAlgorithm_DL_erm)
                 test_X = rest_repo.X
                 test_y = rest_repo.y
 
-            # ── Autoencoder imputation (IMP-1) ──
-            if self.config.get("imputation") == "autoencoder":
-                imp_params = self.config.get("imputation_params", {})
-                nan_masks = load_nan_masks(
-                    list(ds_key_all), pred_target=pred_target,
-                    flag_more_feat_types=True)
-                if nan_masks is not None:
-                    # Split NaN masks with same indices as data
-                    # Note: nan_masks are full-feature (before feature selection),
-                    # so select the same feature indices used by the model
-                    from data_loader.data_loader_dl import dl_feat_preparation
-                    from utils.common_settings import global_config
-                    _fp = dl_feat_preparation(
-                        config_name="dl_feat_prep",
-                        flag_more_feat_types=global_config["all"]["flag_more_feat_types"])
-                    si = _fp.selected_feature_idx
-
-                    # Apply same dataset-level filtering to nan_masks, then index by train/val splits
-                    filtered_masks = {}
-                    for k in ds_keys:
-                        m = nan_masks[k]
-                        if ds_filter_idx[k] is not None:
-                            m = m[ds_filter_idx[k]]
-                        filtered_masks[k] = m[:, :, si]
-                    train_mask = np.concatenate([filtered_masks[k][per_ds_train_idx[k]] for k in ds_keys])
-                    val_mask = np.concatenate([filtered_masks[k][per_ds_val_idx[k]] for k in ds_keys])
-
-                    # Train AE on training split
-                    T, F_dim = train_X.shape[1], train_X.shape[2]
-                    imputer = AutoencoderImputer(
-                        input_dim=T * F_dim,
-                        bottleneck_dim=imp_params.get("bottleneck_dim", 20))
-                    imputer.fit(train_X, train_mask,
-                                epochs=imp_params.get("epochs", 10),
-                                lr=imp_params.get("lr", 1e-3),
-                                verbose=self.config["training_params"].get("verbose", 0))
-
-                    # Apply trained AE to all splits
-                    train_X = imputer.transform(train_X, train_mask)
-                    val_X = imputer.transform(val_X, val_mask)
-                    whole_mask = np.concatenate([filtered_masks[k] for k in ds_keys])
-                    whole_X = imputer.transform(whole_X, whole_mask)
-
-                    if test_X is not None and ds_key_rest in nan_masks:
-                        test_mask = nan_masks[ds_key_rest][:, :, si]
-                        if flag_overlap_filter:
-                            test_mask = test_mask[idx]
-                        test_X = imputer.transform(test_X, test_mask)
+                # Impute held-out test dataset per participant
+                if _imputer is not None and ds_key_rest in _nan_masks:
+                    test_mask = _nan_masks[ds_key_rest][:, :, _si]
+                    test_pids_arr = rest_repo.pids
+                    if flag_overlap_filter:
+                        test_mask = test_mask[idx]
+                        test_pids_arr = test_pids_arr[idx]
+                    test_X = _imputer.transform(test_X, test_mask, test_pids_arr,
+                                                epochs=_ae_epochs, lr=_ae_lr)
 
             training_data = TrainingData(
                 train_X=train_X, train_y=train_y,

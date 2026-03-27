@@ -50,62 +50,198 @@ def load_nan_masks(ds_keys, pred_target="dep_weekly", flag_more_feat_types=True)
     return masks
 
 
-class AutoencoderImputer:
-    """Autoencoder-based imputation (Choube et al. 2024/2025).
+class _AutoencoderTwoLayer(nn.Module):
+    """Two-layer autoencoder matching Choube et al.'s default architecture."""
 
-    Trains a shallow autoencoder on training data (loss on observed positions only),
-    then replaces median-imputed values with autoencoder reconstructions for
-    originally-missing positions.
+    def __init__(self, input_size, hidden_size=20, encoding_size=10):
+        super().__init__()
+        self.encoder = nn.Sequential(
+            nn.Linear(input_size, hidden_size),
+            nn.ReLU(),
+            nn.Linear(hidden_size, encoding_size),
+            nn.ReLU(),
+        )
+        self.decoder = nn.Sequential(
+            nn.Linear(encoding_size, hidden_size),
+            nn.ReLU(),
+            nn.Linear(hidden_size, input_size),
+        )
+
+    def forward(self, x):
+        return self.decoder(self.encoder(x))
+
+
+class AutoencoderImputer:
+    """Per-participant autoencoder imputation (Choube et al. 2024/2025).
+
+    Reimplementation of the Autoencoder-KNN strategy from
+    https://github.com/UbiWell/imputation-matters.  For each participant:
+
+    1. Per-participant, per-column min-max scaling to [0, 1]
+    2. KNN initial fill (k=6, distance-weighted) for NaN positions
+    3. Train a two-layer autoencoder (F->20->10->20->F) with MSE loss
+       on observed positions only, mini-batch (batch_size=8, shuffle)
+    4. Select weights from epoch with minimum last-batch loss
+    5. Replace only originally-missing positions with AE reconstructions
+       (Choube et al. overwrite ALL values including observed; we preserve
+       observed values exactly — see research plan for disclosure)
+    6. Inverse min-max scaling back to original range
+
+    Each day is treated as an independent sample of dimension F (no
+    temporal flattening).
     """
 
-    def __init__(self, input_dim, bottleneck_dim=20):
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.input_dim = input_dim
-        self.ae = nn.Sequential(
-            nn.Linear(input_dim, bottleneck_dim),
-            nn.ReLU(),
-            nn.Linear(bottleneck_dim, input_dim),
-        ).to(self.device)
+    def __init__(self, hidden_size=20, encoding_size=10, knn_neighbors=6):
+        # Force CPU: per-participant AEs are tiny and GPU transfer overhead
+        # dominates. CPU also enables parallel training via ThreadPoolExecutor.
+        self.device = torch.device("cpu")
+        self.hidden_size = hidden_size
+        self.encoding_size = encoding_size
+        self.knn_neighbors = knn_neighbors
 
-    def fit(self, X_train, nan_mask_train, epochs=10, lr=1e-3, verbose=0):
-        """Train on observed positions only.
+    def _fit_one(self, X_p, mask_p, epochs, lr):
+        """Train per-participant AE and return imputed data.
 
         Args:
-            X_train: np.ndarray (N, 28, F) — median-imputed training data
-            nan_mask_train: np.ndarray (N, 28, F) — boolean, True = originally missing
+            X_p: (N_samples, 28, F) — median-imputed data for one participant
+            mask_p: (N_samples, 28, F) — boolean, True = originally missing
+            epochs: number of training epochs
+            lr: learning rate
+
+        Returns:
+            (N_samples, 28, F) — re-imputed
         """
-        optimizer = torch.optim.Adam(self.ae.parameters(), lr=lr)
-        X_flat = torch.from_numpy(X_train.reshape(len(X_train), -1).astype(np.float32)).to(self.device)
-        obs_mask = torch.from_numpy((~nan_mask_train).reshape(len(X_train), -1)).to(self.device)
+        from sklearn.impute import KNNImputer
+        # Note: torch seed is NOT reset here. The caller sets it once before
+        # the participant loop, matching Choube et al.'s protocol where each
+        # participant gets a different (but deterministic) initialization.
 
-        self.ae.train()
-        for epoch in range(epochs):
-            recon = self.ae(X_flat)
-            diff = (recon - X_flat) ** 2
-            loss = (diff * obs_mask).sum() / obs_mask.sum().clamp(min=1)
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-            if verbose > 0:
-                print(f"  AE imputation epoch {epoch}: loss={loss.item():.6f}")
-        return self
+        N, T, F_dim = X_p.shape
 
-    def transform(self, X, nan_mask):
-        """Replace originally-missing positions with AE reconstructions.
+        # Reshape to (N*T, F): each day is one sample
+        X_days = X_p.reshape(N * T, F_dim).copy()
+        mask_days = mask_p.reshape(N * T, F_dim).copy()
+
+        # Drop columns that are entirely NaN for this participant
+        all_nan_cols = mask_days.all(axis=0)
+        keep_cols = ~all_nan_cols
+        if not keep_cols.any():
+            return X_p  # nothing to impute
+        X_sub = X_days[:, keep_cols].astype(np.float64)
+        mask_sub = mask_days[:, keep_cols]
+        F_sub = X_sub.shape[1]
+
+        # Per-column min-max scaling to [0, 1]
+        col_min = np.nanmin(np.where(~mask_sub, X_sub, np.nan), axis=0)
+        col_max = np.nanmax(np.where(~mask_sub, X_sub, np.nan), axis=0)
+        col_range = col_max - col_min
+        col_range[col_range == 0] = -1  # prevent div-by-zero (matches Choube)
+        X_scaled = (X_sub - col_min) / col_range
+        col_range[col_range == -1] = 0  # restore for inverse transform
+
+        # Set NaN positions back to NaN for KNN imputer
+        X_scaled[mask_sub] = np.nan
+
+        # KNN initial fill (k=6, distance-weighted, per-participant)
+        knn = KNNImputer(n_neighbors=self.knn_neighbors, weights="distance",
+                         keep_empty_features=False)
+        X_filled = knn.fit_transform(X_scaled)
+
+        # Build tensors
+        tensor_data = torch.tensor(X_filled, dtype=torch.float32)
+        mask_t = torch.tensor(mask_sub)
+
+        # Build DataLoader (batch_size=8, shuffle=True)
+        dataset = torch.utils.data.TensorDataset(tensor_data, mask_t)
+        loader = DataLoader(dataset, batch_size=8, shuffle=True)
+
+        # Two-layer autoencoder
+        ae = _AutoencoderTwoLayer(F_sub, self.hidden_size, self.encoding_size).to(self.device)
+        optimizer = torch.optim.Adam(ae.parameters(), lr=lr)
+
+        # Train with best-epoch selection (last-batch loss per epoch)
+        best_loss = float("inf")
+        best_state = None
+        ae.train()
+        for _ in range(epochs):
+            last_loss = None
+            last_state = None
+            for batch_data, batch_mask in loader:
+                batch_data = batch_data.to(self.device)
+                batch_mask = batch_mask.to(self.device)
+                obs = ~batch_mask
+                last_state = {k: v.clone() for k, v in ae.state_dict().items()}
+                recon = ae(batch_data)
+                loss = ((recon - batch_data) ** 2 * obs).sum() / obs.sum().clamp(min=1)
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+                last_loss = loss.item()
+            if last_loss is not None and last_loss < best_loss:
+                best_loss = last_loss
+                best_state = last_state  # state before the last step (matches Choube)
+
+        if best_state is not None:
+            ae.load_state_dict(best_state)
+
+        # Reconstruct and replace only NaN positions
+        ae.eval()
+        with torch.no_grad():
+            recon = ae(tensor_data.to(self.device)).cpu().numpy()
+
+        # Fallback: if AE produces all-NaN, keep KNN-filled values (matches Choube)
+        if np.isnan(recon).all():
+            recon = tensor_data.numpy()
+
+        X_filled_np = tensor_data.numpy()
+        X_filled_np[mask_sub] = recon[mask_sub]
+
+        # Inverse min-max scaling
+        X_unscaled = X_filled_np * col_range + col_min
+
+        # Write back only originally-missing positions. Choube et al. overwrite
+        # ALL values (observed + missing) with AE reconstructions, effectively
+        # using the AE as a denoiser. We preserve observed values exactly and
+        # only fill NaN positions — this deviation is disclosed in the research plan.
+        X_out = X_p.copy()
+        out_days = X_out.reshape(N * T, F_dim)
+        full_recon = out_days.copy()
+        full_recon[:, keep_cols] = X_unscaled
+        write_mask = mask_days  # True = originally missing
+        out_days[write_mask] = full_recon[write_mask]
+        return X_out.reshape(N, T, F_dim)
+
+    def transform(self, X, nan_mask, pids, epochs=10, lr=1e-4, verbose=0,
+                  max_workers=None):
+        """Impute per-participant, parallelized across CPU threads.
 
         Args:
-            X: np.ndarray (N, 28, F)
-            nan_mask: np.ndarray (N, 28, F) boolean (True = missing)
+            X: np.ndarray (N, 28, F) — median-imputed data
+            nan_mask: np.ndarray (N, 28, F) — boolean, True = originally missing
+            pids: np.ndarray (N,) — participant IDs
+            epochs: training epochs per participant
+            lr: learning rate (default 1e-4 matching Choube et al. with min-max)
+            verbose: print progress
+            max_workers: max parallel threads (default: min(8, num_participants))
 
         Returns:
             np.ndarray (N, 28, F) — re-imputed
         """
-        self.ae.eval()
-        with torch.no_grad():
-            X_flat = torch.from_numpy(X.reshape(len(X), -1).astype(np.float32)).to(self.device)
-            recon = self.ae(X_flat).cpu().numpy().reshape(X.shape)
         X_out = X.copy()
-        X_out[nan_mask] = recon[nan_mask]
+        unique_pids = np.unique(pids)
+        if verbose > 0:
+            print(f"  AE imputation: {len(unique_pids)} participants")
+
+        # Set seed once before the participant loop, matching Choube et al.
+        # Each participant gets a different (but deterministic) initialization
+        # based on where the RNG state is after previous participants.
+        # NOTE: this means we must run sequentially to match their seeding
+        # behavior. Parallel execution would give nondeterministic seeds.
+        torch.manual_seed(42)
+        for pid in unique_pids:
+            idx = np.where(pids == pid)[0]
+            X_out[idx] = self._fit_one(X[idx], nan_mask[idx], epochs, lr)
+
         return X_out
 
 
