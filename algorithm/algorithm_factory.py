@@ -27,7 +27,6 @@ except (ImportError, ModuleNotFoundError, AttributeError):
     pass  # TF-dependent algorithms not available
 
 from algorithm.dl_torch_erm import DepressionDetectionAlgorithm_DL_torch_erm
-from algorithm.dl_torch_mae import DepressionDetectionAlgorithm_DL_torch_mae
 from algorithm.dl_torch_reorder import DepressionDetectionAlgorithm_DL_torch_reorder
 from algorithm.dl_torch_modality_token import (
     DepressionDetectionAlgorithm_DL_torch_modality_token,
@@ -69,8 +68,6 @@ def load_algorithm(config_name:str) -> DepressionDetectionAlgorithmBase:
         algorithm = DepressionDetectionAlgorithm_ML_xu_personalized(config_name = config_name)
     elif (config_name.startswith("dl_torch_erm")):
         algorithm = DepressionDetectionAlgorithm_DL_torch_erm(config_name = config_name)
-    elif (config_name.startswith("dl_torch_mae")):
-        algorithm = DepressionDetectionAlgorithm_DL_torch_mae(config_name = config_name)
     elif (config_name.startswith("dl_torch_modality_token_reorder_mae")):
         algorithm = DepressionDetectionAlgorithm_DL_torch_modality_token_mae(config_name = config_name)
     elif (config_name.startswith("dl_torch_modality_token_reorder")):
