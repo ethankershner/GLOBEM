@@ -2,7 +2,7 @@
 PyTorch network architectures for behavioral time series depression detection.
 
 Provides:
-- BehavioralTransformerEncoder: Transformer encoder with learned day-of-week positional encoding
+- BehavioralTransformerEncoder: Transformer encoder with fixed sinusoidal positional encoding
 - CNN1D_Backbone: 1D-CNN matching the original GLOBEM TF architecture
 - LabelHead: Dense(d_model -> 16, relu) -> Dense(16 -> 2) for depression classification
 - ReorderHead: Dense(32, relu) -> Dense(num_classes+1, softmax) for reorder task
