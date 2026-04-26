@@ -199,10 +199,7 @@ class AutoencoderImputer:
         # Inverse min-max scaling
         X_unscaled = X_filled_np * col_range + col_min
 
-        # Write back only originally-missing positions. Choube et al. overwrite
-        # ALL values (observed + missing) with AE reconstructions, effectively
-        # using the AE as a denoiser. We preserve observed values exactly and
-        # only fill NaN positions — this deviation is disclosed in the research plan.
+        # Write back only originally-missing positions; observed values are preserved.
         X_out = X_p.copy()
         out_days = X_out.reshape(N * T, F_dim)
         full_recon = out_days.copy()
